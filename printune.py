@@ -234,6 +234,9 @@ class Printune:
         self.belt_now = None      # the belt being listened to (the test printer's fake plucks use it)
         self.belt_plucks = 5
         self._tool_info = None
+        self.shaper = {}
+        self.graphs = []
+        self.graph_mark = {}
         gcode = self.printer.lookup_object("gcode")
         self.gcode = gcode
         gcode.register_command(
@@ -250,6 +253,10 @@ class Printune:
             "_PRINTUNE_BELTS_START", self.cmd_PRINTUNE_BELTS_START, desc=self.cmd_PRINTUNE_BELTS_START_help)
         gcode.register_command(
             "_PRINTUNE_BELT_LISTEN", self.cmd_PRINTUNE_BELT_LISTEN, desc=self.cmd_PRINTUNE_BELT_LISTEN_help)
+        gcode.register_command(
+            "_PRINTUNE_SHAPER_RUN", self.cmd_PRINTUNE_SHAPER_RUN, desc=self.cmd_PRINTUNE_SHAPER_RUN_help)
+        gcode.register_command(
+            "_PRINTUNE_GRAPH", self.cmd_PRINTUNE_GRAPH, desc=self.cmd_PRINTUNE_GRAPH_help)
 
     def get_status(self, eventtime):
         soak = {"active": False, "elapsed": 0., "min": self.soak_min, "max": self.soak_max,
@@ -261,6 +268,7 @@ class Printune:
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
                 "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
+                "shaper": self.shaper, "graphs": self.graphs,
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
                                   "soak": f["soak"]} for k, f in gen.FILAMENTS.items()}}
 
@@ -358,6 +366,102 @@ class Printune:
         else:
             gcmd.respond_info("Printune: belt %s: %.1f Hz (average of %d plucks)%s" % (
                 belt, res["freq"], res["used"], (" - " + res["note"]) if res["note"] else ""))
+
+    # ---------------- input shaper (Kalico's SHAPER_CALIBRATE) ----------------
+    cmd_PRINTUNE_SHAPER_RUN_help = "Printune: run SHAPER_CALIBRATE and keep its recommendation"
+
+    def _saved_shaper(self):
+        try:
+            st = self.printer.lookup_object("configfile").get_status(self.reactor.monotonic())
+        except Exception:
+            return {}
+        cur = dict(st.get("settings", {}).get("input_shaper", {}))
+        cur.update(st.get("save_config_pending_items", {}).get("input_shaper", {}))
+        out = {}
+        for ax in ("x", "y"):
+            if cur.get("shaper_freq_" + ax):
+                out[ax] = {"type": str(cur.get("shaper_type_" + ax, cur.get("shaper_type", "mzv"))),
+                           "freq": round(float(cur["shaper_freq_" + ax]), 1)}
+        return out
+
+    def cmd_PRINTUNE_SHAPER_RUN(self, gcmd):
+        if self.printer.lookup_object("resonance_tester", None) is None:
+            raise gcmd.error("Printune: input shaper needs an accelerometer ([resonance_tester])")
+        before = self._saved_shaper()
+        lines = []
+        cb = lines.append
+        self.gcode.register_output_handler(cb)
+        self.state, self.message = "shaper", "Measuring resonances: the printer shakes for a few minutes"
+        try:
+            self.gcode.run_script_from_command("SHAPER_CALIBRATE")
+        finally:
+            if cb in self.gcode.output_callbacks:
+                self.gcode.output_callbacks.remove(cb)
+            self.state, self.message = "idle", ""
+        res, ax, accels = {}, None, {}
+        for ln in "\n".join(lines).splitlines():
+            m = re.search(r"best input shaper parameters for (\w) axis", ln)
+            if m:
+                ax, accels = m.group(1).lower(), {}
+                continue
+            m = re.search(r"smoothing with '(\w+)', suggested max_accel <= ([\d.]+)", ln)
+            if m:
+                accels[m.group(1)] = float(m.group(2))
+                continue
+            m = re.search(r"Recommended shaper_type_(\w) = (\w+), shaper_freq_\w = ([\d.]+) Hz", ln)
+            if m:
+                a = m.group(1).lower()
+                res[a] = {"type": m.group(2), "freq": float(m.group(3)),
+                          "max_accel": accels.get(m.group(2)) if ax == a else None}
+        if not res:
+            raise gcmd.error("Printune: SHAPER_CALIBRATE gave no recommendation")
+        changed = any(a not in before or before[a]["type"] != r["type"]
+                      or abs(before[a]["freq"] - r["freq"]) > 1.0 for a, r in res.items())
+        accs = [r["max_accel"] for r in res.values() if r.get("max_accel")]
+        self.shaper = {"new": res, "old": before, "changed": changed,
+                       "max_accel": min(accs) if accs else None, "time": time.time()}
+        gcmd.respond_info("Printune: input shaper %s" % ", ".join(
+            "%s %s %.1f Hz" % (a.upper(), r["type"], r["freq"]) for a, r in sorted(res.items())))
+
+    # ---------------- Shake&Tune graphs ----------------
+    cmd_PRINTUNE_GRAPH_help = ("Printune: list the Shake&Tune graphs made since MARK=1 "
+                               "(KIND=belts|input_shaper|...)")
+
+    def _graph_files(self, kind):
+        folder = "~/printer_data/config/ShakeTune_results"
+        try:
+            st = self.printer.lookup_object("configfile").get_status(self.reactor.monotonic())
+            folder = st["settings"].get("shaketune", {}).get("result_folder", folder)
+        except Exception:
+            pass
+        folder = os.path.join(os.path.expanduser(folder), kind)
+        try:
+            return folder, {os.path.join(folder, f): os.path.getmtime(os.path.join(folder, f))
+                            for f in os.listdir(folder) if f.endswith(".png")}
+        except OSError:
+            return folder, {}
+
+    def cmd_PRINTUNE_GRAPH(self, gcmd):
+        kind = gcmd.get("KIND", "belts")
+        if not re.match(r"^[a-z_]+$", kind):
+            raise gcmd.error("Printune: bad KIND")
+        folder, files = self._graph_files(kind)
+        if gcmd.get_int("MARK", 0):
+            # what is there before the run (file times, not the clock: the clock may differ)
+            self.graph_mark = files
+            self.graphs = []
+            return
+        old = self.graph_mark or {}
+        new = sorted(f for f, t in files.items() if f not in old or t > old[f])
+        graphs = []
+        for f in new:
+            rel = os.path.relpath(f, self.cfg_dir)
+            if not rel.startswith(".."):
+                graphs.append(rel)
+            gcmd.respond_info("Printune: Shake&Tune graph: %s" % f)
+        self.graphs = graphs
+        if not new:
+            gcmd.respond_info("Printune: no new Shake&Tune graph in %s" % folder)
 
     # ---------------- wizard: build and start a session ----------------
     cmd_PRINTUNE_START_help = "Printune: build a tuning session for a filament and start it"

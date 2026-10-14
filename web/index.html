@@ -84,6 +84,8 @@ button:focus-visible, .btn:focus-visible, input:focus-visible { outline: 3px sol
 .test-card b { font-size: 18px; color: var(--primary); }
 a.test-card { text-decoration: none; }
 .test-card.off { opacity: .5; border-style: dashed; }
+#pGraphs { margin: 10px 0; }
+#pGraphs img { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: #fff; margin: 8px 0; }
 .test-card.off b { color: var(--muted); }
 .test-card span { color: var(--muted); font-size: 15px; }
 details.card > summary {
@@ -198,6 +200,7 @@ input[type=text], input[type=number] {
   <section class="card" id="prompt" aria-live="polite" hidden>
     <h2 id="pTitle"></h2>
     <div id="pBody"></div>
+    <div id="pGraphs" hidden></div>
     <div id="pResults" hidden>
       <a class="btn primary block big" id="dlBtn" href="#" download style="min-height:64px;font-size:20px">Download Orca preset</a>
       <p class="help" id="dlHelp"></p>
@@ -234,6 +237,17 @@ input[type=text], input[type=number] {
           <span>Smooth top surfaces: not too much, not too little plastic.</span></button>
         <button type="button" class="test-card" data-test="ret"><b>Retraction &amp; temperature</b>
           <span>Towers that show which settings string the least.</span></button>
+      </div>
+      <h2 class="section">3. When the filament is tuned</h2>
+      <div class="grid2">
+        <button type="button" class="test-card" id="shaperBtn"><b>Input shaper</b>
+          <span>Kalico measures the resonances and picks a shaper; Shake&amp;Tune graphs if installed.</span></button>
+        <a class="test-card off" id="shaperOff" href="https://docs.kalico.gg/Measuring_Resonances.html"
+           target="_blank" rel="noopener" hidden><b>Input shaper</b>
+          <span>Needs an accelerometer on the toolhead. Tap to see how to add one.</span></a>
+        <a class="test-card off" id="stOff" href="https://github.com/Frix-x/klippain-shaketune"
+           target="_blank" rel="noopener" hidden><b>Shake&amp;Tune graphs</b>
+          <span>Not installed. Tap to get it; Printune then runs it with the belts and the shaper.</span></a>
       </div>
     </div>
     <details class="card" id="tools">
@@ -764,6 +778,26 @@ function renderPrompt() {
     foot.hidden = !footer.length;
   }
   renderResultsExtras();
+  renderGraphs();
+}
+
+// Shake&Tune graphs made by the last run, under its prompt
+let graphsShown = "";
+function renderGraphs() {
+  const on = !!prompt && /Shake&Tune .*graph/.test(prompt.title || "");
+  const list = on ? (pt().graphs || []) : [];
+  const key = list.join("|");
+  show("pGraphs", list.length > 0);
+  if (key === graphsShown) return;
+  graphsShown = key;
+  const box = $("pGraphs");
+  box.textContent = "";
+  for (const rel of list) {
+    const href = "/server/files/config/" + rel.split("/").map(encodeURIComponent).join("/");
+    const a = el("a", { href: href, target: "_blank", rel: "noopener", class: "graph" });
+    a.appendChild(el("img", { src: href, alt: "Shake&Tune graph " + rel.split("/").pop(), loading: "lazy" }));
+    box.appendChild(a);
+  }
 }
 
 function renderResultsExtras() {
@@ -1043,6 +1077,9 @@ function renderHome() {
   const tools = pt().tools || {};
   show("beltBtn", !!tools.accel);
   show("beltOff", !tools.accel);
+  show("shaperBtn", !!tools.accel);
+  show("shaperOff", !tools.accel);
+  show("stOff", !tools.shaketune);
   const enc = filaments();
   const t = enc[form.type] || {};
   $("heatBtn").textContent = "Heat nozzle to " + steppers.heat.value + " °C";
@@ -1129,6 +1166,7 @@ function render() {
 function wire() {
   $("wizardBtn").onclick = () => openForm("wizard");
   $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS");
+  $("shaperBtn").onclick = () => runGcode("_PRINTUNE_SHAPER");
   for (const b of document.querySelectorAll("[data-test]")) b.onclick = () => openForm(b.dataset.test);
   $("backBtn").onclick = () => { saveForm(); view = "home"; render(); };
   $("startBtn").onclick = startSession;
