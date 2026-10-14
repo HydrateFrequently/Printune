@@ -49,7 +49,34 @@ else
 fi
 # configs from before the rename (ECAL) include files that no longer exist
 sed -i 's/^\[include ellis_calibration.cfg\]/[include printune.cfg]/; s/^\[include ecal_export.cfg\]/[include printune_plugin.cfg]/' $cfg/printer.cfg
-grep -q '^\[include printune_plugin.cfg\]' $cfg/printer.cfg || echo '[include printune_plugin.cfg]' >> $cfg/printer.cfg
+# add an include, above Kalico's SAVE_CONFIG block if there is one
+add_include() {
+  grep -q "^\[include $1\]" $cfg/printer.cfg && return
+  awk -v inc="[include $1]" '!done && /^#\*# <-+ SAVE_CONFIG -+>/ {print inc; print ""; done=1} {print} END {if (!done) print inc}' \
+    $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
+}
+add_include printune_plugin.cfg
+# Fake accelerometer, input shaper and Shake&Tune: ACCEL=0 / SHAKETUNE=0 make a
+# printer without them, to see the steps greyed out. The fake accelerometer is
+# newer than some images, so it is linked from the host folder when there.
+acc=$cfg/testenv_accel.cfg
+fa=/home/pi/host/test_env/printer_config/fake_accel.py
+[ -f $fa ] || fa=/home/pi/default_config/fake_accel.py
+st=/home/pi/kalico/klippy/extras/shaketune
+if [ "${ACCEL:-1}" = 1 ] && [ -f $fa ]; then
+  ln -sfn $fa /home/pi/kalico/klippy/extras/fake_accel.py
+  printf '[fake_accel]\nx_modes: 52.0:0.08, 87:0.12:0.3\ny_modes: 41.0:0.10\n\n[resonance_tester]\naccel_chip: fake_accel\nprobe_points: 187.5,194,20\n\n[input_shaper]\n' > $acc
+  if [ "${SHAKETUNE:-1}" = 1 ]; then
+    if [ -e $st ]; then
+      printf '\n[shaketune]\n' >> $acc
+    else
+      echo "SHAKETUNE=1 but this image has no Shake&Tune: rebuild it (docker compose up -d --build)"
+    fi
+  fi
+else
+  echo "# no accelerometer (ACCEL=0)" > $acc
+fi
+add_include testenv_accel.cfg
 awk '!(/^\[include / && seen[$0]++)' $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
 rm -f $cfg/ellis_calibration.cfg $cfg/ecal_export.cfg
 # Own only the folders that are not bind-mounted from the host

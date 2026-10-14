@@ -35,6 +35,8 @@ it does not start again by itself after a reboot.
 | Reset printer.cfg, saved variables and history | `docker compose down -v` (they are kept in Docker volumes otherwise) |
 | Add print files | drop them in `gcodes/` or upload in Mainsail |
 | Read logs | `logs/klippy.log`, `logs/moonraker.log` |
+| Test a printer without an accelerometer or Shake&Tune | set `ACCEL=0` (no accelerometer, no input shaper) or `SHAKETUNE=0` in docker-compose.yml, then `docker compose up -d`. Their Printune steps then show greyed out |
+| See Shake&Tune's graphs | they land in Mainsail's config files under `ShakeTune_results/` |
 | Peek at the thermal model | `SIM_THERMAL` in the console (`SIM_THERMAL CHAMBER=45` sets a value) |
 
 ## Run a session without clicking
@@ -57,7 +59,9 @@ python3 tools/drive_session.py --script PRINTUNE --pick "Tune a filament=Tuning 
 | Speed-up | libfaketime runs klippy and the virtual MCU on the same faster clock. Moonraker and the browser stay on real time. |
 | Homing | Endstop pins always read "triggered", so homing completes instantly at the endstop position. |
 | Temperatures | `sim_thermal` (a klippy extra, test-only): lumped bed, hotend and chamber nodes, driven by the heaters' real PWM output, with sensor lag and a little noise. A cold nozzle near a hot bed reads the bed, not the chamber, which falls off with nozzle height. `[temperature_sensor chamber]` shows the model's true chamber air. |
-| Not simulated | Filament, extrusion, print quality, probing, input shaper, TMC drivers, real step timing. |
+| Accelerometer | `fake_accel` (a klippy extra, test-only) stands in for an ADXL345/Beacon. It takes the toolhead's commanded acceleration and rings it through a few resonances (X 52 and 87 Hz, Y 41 Hz), plus noise. Kalico's `SHAPER_CALIBRATE` and `[input_shaper]` run on it unchanged. |
+| Shake&Tune | the real Shake&Tune (v6.0.0) is installed as its own install script does it and reads the fake accelerometer, so its commands and graphs work. The graphs show the fake resonances, not a real printer. |
+| Not simulated | Filament, extrusion, print quality, probing, belts, TMC drivers, real step timing. |
 
 Timeouts run on the fast clock too: a 30 min idle timeout lasts 90 s of real time at 20x. Use `SPEED=1` when you want to
 click through a session at your own pace. klippy.log also rotates at "midnight" on the fast clock, about every 70
@@ -69,7 +73,7 @@ minutes of real time at 20x.
 |---|---|
 | `Dockerfile`, `docker-compose.yml` | the image and how to run it |
 | `vmcu/` | virtual MCU patch and pty launcher |
-| `printer_config/` | printer.cfg (Nebula-370-sized CoreXY), macros.cfg, moonraker.conf, sim_thermal.py |
+| `printer_config/` | printer.cfg (Nebula-370-sized CoreXY), macros.cfg, moonraker.conf, sim_thermal.py, fake_accel.py |
 | `config/` | supervisord, nginx and Kalico build config |
 | `tools/drive_session.py` | scripted prompt answering |
 | `netfix/` | empty; only for networks behind a TLS-inspecting proxy (see Dockerfile) |

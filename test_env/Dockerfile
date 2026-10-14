@@ -46,6 +46,14 @@ RUN cp -r kalico kalico-vmcu && cd kalico-vmcu \
  && cp /tmp/kalico-vmcu.config .config && make olddefconfig >/dev/null \
  && make -j4 >/dev/null && ls -la out/klipper.elf
 
+# Shake&Tune (Klippain), installed the way its install.sh does it: cloned to
+# ~/klippain_shaketune, its Python packages in klippy-env, linked into klippy's
+# extras. start.sh turns it on with SHAKETUNE=1 (the default).
+ARG SHAKETUNE_REF=v6.0.0
+RUN git clone -q --depth 1 -b ${SHAKETUNE_REF} https://github.com/Frix-x/klippain-shaketune klippain_shaketune \
+ && klippy-env/bin/pip install -q -r klippain_shaketune/requirements.txt \
+ && ln -s /home/pi/klippain_shaketune/shaketune kalico/klippy/extras/shaketune
+
 ARG MOONRAKER_REF=9e676eba6b02661a4dfa3ec6e7ac3f3504498e6d
 RUN git clone -q https://github.com/Arksine/moonraker && git -C moonraker checkout -q ${MOONRAKER_REF} \
  && python3 -m venv moonraker-env \

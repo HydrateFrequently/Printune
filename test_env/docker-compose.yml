@@ -11,6 +11,8 @@ services:
     mem_limit: 1g     # it uses about 100 MB
     environment:
       - SPEED=20      # time speed-up of the whole printer; 20 is stable, 1 = real time
+      - ACCEL=1       # 1 = fake accelerometer + input shaper on; 0 = a printer without one
+      - SHAKETUNE=1   # 1 = Shake&Tune on (needs ACCEL=1); 0 = as if not installed
       - PUID=1000     # your user id and group id on the host (`id -u`, `id -g`),
       - PGID=1000     #   so files in gcodes/ and logs/ stay yours
     ports:
