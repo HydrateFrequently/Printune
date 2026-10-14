@@ -82,6 +82,9 @@ button:focus-visible, .btn:focus-visible, input:focus-visible { outline: 3px sol
   color: var(--text); border-radius: var(--radius); width: 100%;
 }
 .test-card b { font-size: 18px; color: var(--primary); }
+a.test-card { text-decoration: none; }
+.test-card.off { opacity: .5; border-style: dashed; }
+.test-card.off b { color: var(--muted); }
 .test-card span { color: var(--muted); font-size: 15px; }
 details.card > summary {
   cursor: pointer; font-size: 19px; font-weight: 600; min-height: 48px; display: flex; align-items: center;
@@ -210,6 +213,15 @@ input[type=text], input[type=number] {
       <p id="busyText"></p>
     </div>
     <div id="startArea">
+      <h2 class="section">1. The printer</h2>
+      <div class="grid2">
+        <button type="button" class="test-card" id="beltBtn"><b>Belt tension</b>
+          <span>Pluck each belt; the accelerometer hears it and tells you which way to turn.</span></button>
+        <a class="test-card off" id="beltOff" href="https://docs.kalico.gg/Measuring_Resonances.html"
+           target="_blank" rel="noopener" hidden><b>Belt tension</b>
+          <span>Needs an accelerometer on the toolhead. Tap to see how to add one.</span></a>
+      </div>
+      <h2 class="section">2. A filament</h2>
       <button type="button" class="big" id="wizardBtn">Tuning Wizard
         <small>Runs every test, one after the other, and guides you through each pick</small></button>
       <h2 class="section">Or run one test</h2>
@@ -1028,6 +1040,9 @@ function renderHome() {
   if (busy) $("busyText").textContent = "The printer is busy printing " + printFile() + ".";
   show("startArea", !busy);
   show("tools", !busy);
+  const tools = pt().tools || {};
+  show("beltBtn", !!tools.accel);
+  show("beltOff", !tools.accel);
   const enc = filaments();
   const t = enc[form.type] || {};
   $("heatBtn").textContent = "Heat nozzle to " + steppers.heat.value + " °C";
@@ -1113,6 +1128,7 @@ function render() {
 // ---------- event wiring ----------
 function wire() {
   $("wizardBtn").onclick = () => openForm("wizard");
+  $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS");
   for (const b of document.querySelectorAll("[data-test]")) b.onclick = () => openForm(b.dataset.test);
   $("backBtn").onclick = () => { saveForm(); view = "home"; render(); };
   $("startBtn").onclick = startSession;

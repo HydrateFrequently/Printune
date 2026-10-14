@@ -193,7 +193,7 @@ def plan(b):
         if min(fa, fb) < lo - 1:
             which = "both belts" if max(fa, fb) < lo - 1 else ("belt A" if fa < fb else "belt B")
             upd["phase"] = "coarse"
-            return ("Coarse: tighten %s until each reads about %.0f-%.0f Hz, then measure both again"
+            return ("Rough first: tighten %s until each reads about %.0f-%.0f Hz, then measure both again"
                     % (which, lo, hi)), upd
         phase = upd["phase"] = "fine"
     da, db = fa - tgt, fb - tgt
@@ -215,5 +215,5 @@ def plan(b):
         t = max(-1.0, min(1.0, t))
         how = _turn_text(t)
     upd["last"] = {"belt": belt, "turns": t, "A": fa, "B": fb}
-    return ("Fine: %s belt %s %s, then measure both again"
-            % ("tighten" if t > 0 else "loosen", belt, how)), upd
+    return ("%s belt %s %s, then measure both again"
+            % ("Tighten" if t > 0 else "Loosen", belt, how)), upd

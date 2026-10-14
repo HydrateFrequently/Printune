@@ -229,6 +229,7 @@ class Printune:
         self.gen_timer = None
         self.errors = 0           # counts errors, so the page sees a repeated one
         self.belt_tol = config.getfloat("belt_tolerance", 2., above=0.)
+        self.belt_target = config.getfloat("belt_target", 110., minval=20., maxval=400.)
         self.belts = {}           # belt tension session, for the page and the prompts
         self.belt_now = None      # the belt being listened to (the test printer's fake plucks use it)
         self.belt_plucks = 5
@@ -259,7 +260,7 @@ class Printune:
                 "last_rel": self.last_rel, "state": self.state, "message": self.message,
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
-                "tools": self._tools(), "belts": self.belts,
+                "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
                                   "soak": f["soak"]} for k, f in gen.FILAMENTS.items()}}
 
@@ -288,7 +289,7 @@ class Printune:
     def cmd_PRINTUNE_BELTS_START(self, gcmd):
         if self.printer.lookup_object("resonance_tester", None) is None:
             raise gcmd.error("Printune: belt tension needs an accelerometer ([resonance_tester])")
-        target = gcmd.get_float("TARGET", 110., minval=20., maxval=400.)
+        target = gcmd.get_float("TARGET", self.belt_target, minval=20., maxval=400.)
         plucks = gcmd.get_int("PLUCKS", 5, minval=3, maxval=5)
         self.belt_plucks = plucks
         self.belts = {"target": target, "plucks": plucks, "round": 0, "phase": "coarse",
@@ -322,6 +323,8 @@ class Printune:
             quiet = client.get_samples()
             self.belt_now = belt
             self.message = "Pluck belt %s %d times, about once a second" % (belt, n)
+            if gcmd.get_int("UI", 0):
+                self.gcode.run_script_from_command("_PRINTUNE_BELTS_UI STEP=pluck BELT=%s" % belt)
             client = chip.start_internal_client()
             toolhead.dwell(secs)
             client.finish_measurements()
