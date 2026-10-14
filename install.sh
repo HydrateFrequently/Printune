@@ -76,6 +76,9 @@ if [ ! -e "$CONFIG_DIR/printune_settings.cfg" ]; then
 # Toolhead radius (mm) the layout keeps clear of finished prints; default 65.
 # A small toolhead (Voron V0 about 35) fits more tests on one plate.
 #toolhead_radius: 65
+# Belt tension: starting target (Hz) and how close both belts must get (Hz)
+#belt_target: 110
+#belt_tolerance: 2
 # Other OrcaSlicer settings for the test prints, one "key = value" per line, e.g.
 #orca_settings:
 #    outer_wall_speed = 100

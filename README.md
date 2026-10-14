@@ -4,6 +4,7 @@ Filament tuning for Kalico printers, made for people who just want to press a bu
 
 - **One big blue button: Tuning Wizard.** Pick the filament type, give it a name, check the temperature range from the box, press Start. Printune builds the test prints for your printer, heat-soaks if you want, and walks you through every test.
 - **Or one test only:** first layer, pressure advance, flow, or retraction and temperature.
+- **The printer too, in the right order:** belt tension first (pluck each belt; the toolhead accelerometer hears it), then the filament, then the input shaper. Printune runs Kalico's own shaper calibration and, if installed, Shake&Tune's graphs. Steps whose tools are missing are greyed out and link to where to get them.
 - **Works on a phone.** The Printune page is made for a phone next to the printer, and works on a desktop and on small touch screens with a browser.
 - **Results go into the slicer, not the firmware.** Pressure advance, flow ratio, retraction and temperature are per filament, so they belong in the filament preset. The printer's own values are back when the session ends, so swapping filament can never leave a stale value behind.
 
@@ -49,9 +50,21 @@ Open **Printune** in the Mainsail sidebar, or `http://<printer>/server/printune`
 4. After each test the printer pauses and the page shows one big button per printed value. Press the best one. The printer applies it and prints the next test with it.
 5. At the end the page shows your results and a **Download Orca preset** button. In Orca: **File › Import › Import Configs**, pick the file. The preset shows up under your filaments with the name you gave it, based on Orca's Generic preset for that type.
 
-No phone or page? The **PRINTUNE** macro button in Mainsail or Fluidd opens the same menu as prompts (Tuning Wizard, single tests, extruder calibration). It names the preset "<type> Printune"; rename it in Orca.
+No phone or page? The **PRINTUNE** macro button in Mainsail or Fluidd opens the same menu as prompts (belt tension, Tuning Wizard, single tests, input shaper, extruder calibration). It names the preset "<type> Printune"; rename it in Orca.
 
 If you cancel half-way, press **Reset after cancel** in the PRINTUNE menu (or run `_PRINTUNE_RESET`). It puts pressure advance, flow, firmware retraction and the idle timeout back. After a firmware restart there is nothing to put back.
+
+## Tuning the printer
+
+Do these in order: the belts, then each filament (the wizard), then the input shaper. A ringing print or a pressure-advance pick reads better on a printer with the belts right and a tuned filament.
+
+| # | Step | Needs | What happens |
+|---|---|---|---|
+| 1 | **Belt tension** | an accelerometer on the toolhead (`[resonance_tester]`) | Set the target frequency (your printer's build guide gives it) and 3 or 5 plucks. The toolhead parks in the middle. For each belt: a second of quiet, then pluck it like a guitar string about once a second; Printune averages the plucks. After both belts it says which belt to turn and about how far. CoreXY belts pull on each other, so both are measured after every turn: first both roughly to 20–10 Hz under the target, then one belt at a time until both are within `belt_tolerance` of the target and of each other. The turn it asks for gets more precise as it learns how much a turn changes your belts. With Shake&Tune, a belt comparison graph checks the result. |
+| 2 | **Filament** | | the Tuning Wizard, see below |
+| 3 | **Input shaper** | an accelerometer and `[input_shaper]` | Kalico's `SHAPER_CALIBRATE`. Printune shows the pick for each axis and the highest acceleration that keeps corners sharp. The shaper is on right away; **Save to printer.cfg** runs `SAVE_CONFIG` (Kalico restarts). If the shaper changed, re-check pressure advance. With Shake&Tune, its shaper graphs run from the same step and show on the page. |
+
+The belt measurement is new: the pluck detection is tested on recordings from a simulated accelerometer and synthetic data, not yet on many real printers. Fans and motors that run all the time are measured in the quiet second and ignored.
 
 ## The tests
 
@@ -93,6 +106,8 @@ Where each result goes if you type it in by hand:
 | `toolhead_radius` | `65` | mm the layout keeps clear of finished prints. A small toolhead (Voron V0: about 35) fits more tests on one plate |
 | `orca_settings` | | other Orca settings for the test prints, one `key = value` per line (speeds, accelerations, line widths) |
 | `path` | `config/printune_exports` | where the Orca presets are written |
+| `belt_target` | `110` | Hz, the belt target the belt step starts with (changeable on the page) |
+| `belt_tolerance` | `2` | Hz; belts are done when both are this close to the target and to each other |
 
 The test prints use the bed size from the axis limits. If your axes reach past the plate (a wiper or purge bucket), set the plate in `orca_settings`: `printable_area = 0x0,350x0,350x350,0x350`.
 
@@ -127,7 +142,8 @@ Options: `skip` (`patches,pa,em,ret`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, 
 |---|---|
 | `printune_gen.py` | builds the session G-code (also the Orca post-processing script) |
 | `printune.cfg` | macros: the PRINTUNE menu, prompts, picks, heat soak, hands-on tests |
-| `printune.py` | Kalico plugin: wizard start (`_PRINTUNE_START`), heat soak, Orca preset export |
+| `printune.py` | Kalico plugin: wizard start (`_PRINTUNE_START`), heat soak, Orca preset export, belt listening, input shaper results |
+| `printune_belts.py` | finds the plucks in an accelerometer recording and plans the next belt turn |
 | `moonraker/printune_web.py`, `web/index.html` | the Printune page and the Moonraker component that serves it |
 | `install.sh` | installer |
 | `Printune.stl` | placeholder object for the Orca route |
