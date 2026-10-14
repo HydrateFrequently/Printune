@@ -255,7 +255,11 @@ class EcalExport:
             name, inherits = fid + SUFFIX, parent
         elif " @" in fid:
             # a system preset: a child of it
-            name, inherits = fid.split(" @")[0] + SUFFIX, fid
+            # "Generic ABS @System" -> "Generic ABS (ECAL)", "Generic ABS @Voron"
+            # -> "Generic ABS Voron (ECAL)", so different vendors don't collide
+            base, vendor = fid.rsplit(" @", 1)
+            name = base + ("" if vendor == "System" else " " + vendor) + SUFFIX
+            inherits = fid
         else:
             # a root preset (yours, or a vendor's without '@'): a standalone
             # copy holding every filament setting of the slice
