@@ -52,9 +52,9 @@ So the tests must stay sequential. ECAL makes them sequential within one heat so
 
 With `ecal_export.py` installed (see Installing), the printer writes that profile for you at the end of the session: `config/ecal_exports/<filament name>.json`, an Orca filament preset holding the profile you sliced with plus your picks (flow ratio, pressure advance, nozzle temperature, retraction). Download it in Mainsail (Machine › ecal_exports) and import it in Orca with **File › Import › Import Configs**.
 
-- A filament preset you made yourself keeps its name, so the import replaces it (Orca asks first).
-- A system preset such as *Generic ABS @System* cannot be overwritten, so the export is a new preset named *Generic ABS (ECAL)* that inherits from it.
-- The preset's notes list every value that changed and the date.
+- It is always a new preset, so your own presets are never replaced: *My ABS* becomes *My ABS (ECAL)*, on the same parent, and *Generic ABS @System* becomes *Generic ABS (ECAL)*, inheriting from it. Tuning an *(ECAL)* preset again updates it (Orca asks first).
+- It holds every filament setting the slice was made with, so your own edits carry over. Settings Orca does not write into the G-code (such as the printer list a preset is limited to) come from the parent.
+- The preset's notes list every value that changed, the date and the preset it came from.
 
 The summary prompt also lists each value with its field, for typing them in by hand:
 
@@ -134,7 +134,7 @@ python3 ecal.py -o session.gcode --set nozzle_temperature=245 --start "PRINT_STA
 - **No tool changes.** A `T0` or `ACTIVATE_EXTRUDER` resets Klipper's flow multiplier, so don't put one in a pause macro.
 - **Orca pitfalls.** Orca runs post-processing scripts only when it exports or uploads the G-code: its preview, time estimate and the project file show the plain placeholder. With the printer option *Use 3MF instead of G-code* switched on, Orca skips post-processing scripts on upload; switch it off for this print. Orca puts the full name into a `; printing object` comment, which is where ECAL reads the options from.
 - **The Orca plugin system** (main branch, not in any release yet) is not used. The post-processing script works on released versions.
-- **Preset export.** It needs the session to be sliced by Orca (the settings block at the end of the G-code is where the profile comes from); a standalone session gets the summary only. Orca writes slicer-retraction overrides of a user preset into the printer's retraction fields, not as filament overrides, so the export only carries retraction values you picked in the session. The preset is written for the Orca version that sliced the file.
+- **Preset export.** It needs the session to be sliced by Orca with one filament (the settings block at the end of the G-code is where the profile comes from); a standalone session gets the summary only. The nozzle temperature from the towers goes into *Nozzle temperature* only; check the first-layer temperature yourself. Tested with the Orca 2.4.2 command-line slicer loading the exported file; the File › Import menu in the Orca app has not been tried yet.
 - **Step separator.** A file name cannot hold `/`, so `_` works too: `ECAL pa=0-0.06_0.005.stl`.
 - **Pressure advance.** If PA is disabled in the filament profile, ECAL keeps whatever PA the printer currently has as the baseline.
 - **What is copied from Ellis, and what is not.** Ellis's own PA tool and his EM/retraction instructions are the source for every test parameter. The cooling, PA/EM oddities and stepover sections have no print to make.

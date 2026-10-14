@@ -47,7 +47,7 @@ import re
 import shlex
 import sys
 
-VERSION = 4            # must match variable_version in ellis_calibration.cfg
+VERSION = 5            # must match variable_version in ellis_calibration.cfg
 MARKER = "ECAL"
 
 # --------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class Settings:
 def parse_range(text):
     """'0-0.08/0.005' -> [0, 0.005, ...]; '255,245' -> list."""
     # '_' works as the step separator too: a file or object name can't hold '/'
-    text = str(text).strip().replace("_", "/")
+    text = re.sub(r"^([^/_]*)_([\d.]+)$", r"\1/\2", str(text).strip())
     if "/" in text:
         span, step = text.split("/")
         a, b = re.split(r"(?<=\d)-", span)
@@ -255,7 +255,8 @@ def parse_fine(text):
     text = str(text).strip()
     if text in ("", "0", "none", "off"):
         return []
-    rng, step = (float(v) for v in text.replace("_", "/").split("/"))
+    text = re.sub(r"^([\d.]+)_([\d.]+)$", r"\1/\2", text)
+    rng, step = (float(v) for v in text.split("/"))
     n = int(round(rng / step))
     return [round(i * step, 6) for i in range(-n, n + 1)]
 
@@ -1050,8 +1051,9 @@ class Session:
         g("M83")
         g("G92 E0")
         # PA=-1: Orca does not set PA, so keep whatever the printer has now
-        g("_ECAL_BEGIN VERSION=%d PA=%s EM=%.4f FW=%d" % (VERSION, fmt_val(s.pa_profile, 4) if s.pa_enabled else "-1",
-                                                       s.em_profile, 1 if s.fw_retract else 0))
+        g("_ECAL_BEGIN VERSION=%d PA=%s EM=%.4f FW=%d PFR=%.4f" % (
+            VERSION, fmt_val(s.pa_profile, 4) if s.pa_enabled else "-1", s.em_profile,
+            1 if s.fw_retract else 0, _num(s.cfg.get("print_flow_ratio", "1")) or 1.0))
         wr.set_accel(s.a_travel)
         wr.retracted = False
         wr.z = 0.0
