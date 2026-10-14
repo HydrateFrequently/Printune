@@ -1,0 +1,29 @@
+# Virtual Kalico printer. Start:  docker compose up -d --build
+# Mainsail: http://localhost:8080 (only reachable from this PC)
+services:
+  printer:
+    build:
+      context: .
+      args:
+        BASE: debian:bookworm        # same base as Raspberry Pi OS Lite (bookworm)
+    image: virtual-kalico
+    container_name: virtual-kalico
+    environment:
+      - SPEED=20      # time speed-up of the whole printer; 20 is stable, 1 = real time
+      - PUID=1000     # your user id and group id on the host (`id -u`, `id -g`),
+      - PGID=1000     #   so files in gcodes/ and logs/ stay yours
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      # the folder holding ellis_calibration.cfg (the macros under test), read live
+      - ..:/home/pi/host:ro
+      - ./gcodes:/home/pi/printer_data/gcodes
+      - ./logs:/home/pi/printer_data/logs
+      # printer config, variables and Moonraker history survive rebuilds;
+      # `docker compose down -v` resets them to the defaults
+      - config:/home/pi/printer_data/config
+      - database:/home/pi/printer_data/database
+    restart: "no"
+volumes:
+  config:
+  database:

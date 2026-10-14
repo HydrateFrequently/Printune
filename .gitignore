@@ -1,0 +1,4 @@
+testenv/gcodes/
+testenv/logs/
+__pycache__/
+*.run.jsonl
