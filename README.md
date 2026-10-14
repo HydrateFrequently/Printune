@@ -150,4 +150,4 @@ python3 ecal.py -o session.gcode --set nozzle_temperature=245 --start "PRINT_STA
 | `example_session.gcode` | a standalone example (Nebula 370 defaults, generic ABS) |
 | `tools/check_gcode.py` | offline simulator: off-bed moves, widths, travel crashes, toolhead clearance |
 | `tools/plot_layout.py`, `tools/render_shaded.py` | the rough layout plot and the shaded render (`renders/`) |
-| `testenv/` | virtual Kalico printer (Docker, 20x speed) for testing the session and the macros, see testenv/README.md |
+| `test_env/` | virtual Kalico printer (Docker, 20x speed) for testing the session and the macros, see test_env/README.md |
