@@ -8,6 +8,7 @@ services:
         BASE: debian:bookworm        # same base as Raspberry Pi OS Lite (bookworm)
     image: virtual-kalico
     container_name: virtual-kalico
+    mem_limit: 1g     # it uses about 100 MB
     environment:
       - SPEED=20      # time speed-up of the whole printer; 20 is stable, 1 = real time
       - PUID=1000     # your user id and group id on the host (`id -u`, `id -g`),
