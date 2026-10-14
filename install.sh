@@ -73,6 +73,9 @@ if [ ! -e "$CONFIG_DIR/printune_settings.cfg" ]; then
 # Test ranges: start-end/step. A bowden printer needs a longer PA and retraction range.
 #pa_range: 0-0.08/0.005
 #ret_range: 0-1.0/0.1
+# Toolhead radius (mm) the layout keeps clear of finished prints; default 65.
+# A small toolhead (Voron V0 about 35) fits more tests on one plate.
+#toolhead_radius: 65
 # Other OrcaSlicer settings for the test prints, one "key = value" per line, e.g.
 #orca_settings:
 #    outer_wall_speed = 100

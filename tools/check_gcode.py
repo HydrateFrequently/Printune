@@ -30,6 +30,9 @@ def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388)):
         t = ln.split(";", 1)[0].strip()
         if not t:
             continue
+        if t.startswith("_PRINTUNE_CP STEP=plate"):
+            segs.append((x, y, x, y, z, 0.0, 0.0, "PLATE", 2))   # the plate is cleared here
+            continue
         if t.startswith("EXCLUDE_OBJECT_START"):
             obj = t.split("NAME=")[1]
             continue
@@ -60,14 +63,15 @@ def family(name):
     return re.sub(r"\d+$", "", name).rstrip("_")
 
 
-def main(path, R=45.0, h1=0.25, h=0.2):
-    segs, oob = parse(path, h1, h)
+def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
+    segs, oob = parse(path, h1, h, bed=bed)
+    print("plates: %d" % (1 + sum(1 for s in segs if s[8] == 2)))
     print("segments: %d, outside bed: %d" % (len(segs), len(oob)))
     for t in oob[:5]:
         print("  OOB:", t)
     fams = defaultdict(list)
     for s in segs:
-        if not s[8]:
+        if s[8] == 0:
             fams[family(s[7])].append(s[5])
     print("extrusion width by object family (min / median / max, mm):")
     for k, ws in sorted(fams.items()):
@@ -88,6 +92,9 @@ def main(path, R=45.0, h1=0.25, h=0.2):
         offs[r] = (ii[m], jj[m])
     cur = None
     for n, (x0, y0, x1, y1, z, w, e, ob, trav) in enumerate(segs):
+        if trav == 2:
+            H[:] = 0.0      # plate cleared
+            continue
         L = math.hypot(x1 - x0, y1 - y0)
         steps = max(1, int(L / 2.0))
         # clearance: sample along the move (cheap: endpoints + every 2 mm, every 10th seg for long prints)
@@ -133,6 +140,7 @@ def main(path, R=45.0, h1=0.25, h=0.2):
     print("tallest printed material above the nozzle tip within r of the nozzle (worst move):")
     for r in rbins:
         print("  r <= %4.0f mm: %+6.2f mm   at %s" % (r, worst[r][0], worst[r][1]))
+    segs = [s for s in segs if s[8] != 2]
     np.savez_compressed(path + ".paths.npz",
                         segs=np.array([s[:7] for s in segs], np.float32),
                         trav=np.array([s[8] for s in segs], np.int8),
@@ -143,4 +151,6 @@ def main(path, R=45.0, h1=0.25, h=0.2):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 45.0)
+    # check_gcode.py FILE [R] [W,D]
+    bed = (0, 0) + tuple(float(v) for v in sys.argv[3].split(",")) if len(sys.argv) > 3 else (0, 0, 375, 388)
+    main(sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 45.0, bed=bed)

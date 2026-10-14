@@ -211,6 +211,8 @@ class Printune:
         self.chamber_sensor = config.get("chamber_sensor", "")
         self.pa_range = config.get("pa_range", gen.OPTIONS["pa"])
         self.ret_range = config.get("ret_range", gen.OPTIONS["ret"])
+        # toolhead radius for keeping travel clear of finished prints (0 = Orca's 65 mm)
+        self.toolhead_radius = config.getfloat("toolhead_radius", 0., minval=0., maxval=200.)
         # extra Orca settings for the wizard's sessions, one "key = value" per line
         self.orca = {}
         for line in config.get("orca_settings", "").splitlines():
@@ -421,6 +423,8 @@ class Printune:
         cfg.update(self.orca)
         opts = {"temps": ",".join(str(t) for t in gen.tower_temps(tmin, tmax)),
                 "pa": self.pa_range, "ret": self.ret_range}
+        if self.toolhead_radius:
+            opts["clearance"] = "%g" % (self.toolhead_radius,)
         return cfg, opts, mid
 
     def _gen_poll(self, eventtime):

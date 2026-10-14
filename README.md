@@ -90,6 +90,7 @@ Where each result goes if you type it in by hand:
 | `soak_rate` | `0.5` | the soak is done when the sensor rises less than this (°C) in 5 minutes |
 | `pa_range` | `0-0.08/0.005` | direct drive; a bowden needs a longer range, e.g. `0-1.0/0.05` |
 | `ret_range` | `0-1.0/0.1` | retraction rings (mm); bowden e.g. `0-4/0.4` |
+| `toolhead_radius` | `65` | mm the layout keeps clear of finished prints. A small toolhead (Voron V0: about 35) fits more tests on one plate |
 | `orca_settings` | | other Orca settings for the test prints, one `key = value` per line (speeds, accelerations, line widths) |
 | `path` | `config/printune_exports` | where the Orca presets are written |
 
@@ -114,8 +115,8 @@ Options: `skip` (`patches,pa,em,ret`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, 
 ## Caveats
 
 - **Z offset.** The squish test uses live babystepping. Whether `Z_OFFSET_APPLY_PROBE` stores it depends on your probe; with a contact-mode probe, or a start macro that sets its own offset, save it the way your setup expects.
-- **Toolhead clearance.** The layout keeps travel away from finished prints using a 65 mm toolhead radius. The PA frames are under 1 mm tall and may sit closer.
-- **Small beds.** The layout is checked; a bed too small for a test gives a message instead of a squeezed layout.
+- **Toolhead clearance.** The layout keeps travel away from finished prints using a 65 mm toolhead radius (`toolhead_radius`). The PA frames are under 1 mm tall and may sit closer.
+- **Small beds (down to 120×120 mm).** Printune fits what it can on one plate and uses a coarser pressure advance step (the fine pass fills in). When the next test doesn't fit, the printer pauses with **Clear the plate**: take the prints off (keep them to compare), press continue, and the session goes on with the printer still hot. The whole wizard needs one plate from about 300 mm, three at 235–250 mm and up to seven on a Voron V0. Set `toolhead_radius` for a small toolhead to save plates.
 - **Login.** The page uses Moonraker's API like Mainsail does. On a printer with `force_logins`, add your phone's network to `trusted_clients`.
 - **Not tried yet:** importing the preset with the Orca app's File menu (tested with the Orca 2.4.2 command line), KlipperScreen (it can't show web pages), mainline Klipper.
 - **During a pause** the toolhead parks above the prints at the back of the bed. Don't babystep while paused.
