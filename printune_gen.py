@@ -944,7 +944,7 @@ class Session:
         if "patches" not in sk:
             if 3 * PATCH + 2 * m + 12 > min(W, D):
                 raise SystemExit("Printune: the bed (%.0fx%.0f mm) is too small for the first-layer "
-                                 "patches; the smallest bed Printune supports is 120x120 mm" % (W, D))
+                                 "patches (Printune is made for beds from 120x120 mm)" % (W, D))
             cxs = [bx0 + m + PATCH / 2, X(0.5), bx1 - m - PATCH / 2]
             cys = [by0 + max(m, 7.0) + PATCH / 2, Y(0.5), by1 - m - PATCH / 2]
             k = 0
@@ -972,41 +972,16 @@ class Session:
             ccy = (bc[3] + bf[1]) / 2
 
         # extra patches: optional, low; only where they fit on plate 1
-        nb = int(s.opt["patches_extra"]) if self.patches else 0
-        for i in range(nb):
-            dx = (-1 if i % 2 == 0 else 1) * 16.0
-            dy = (-1 if i < 2 else 1) * 16.0
-            name = "PATCH_B%d" % (i + 1)
-            build = lambda cx, cy, name=name: [Obj(name, (cx - PATCH / 2, cy - PATCH / 2, cx + PATCH / 2,
-                                                          cy + PATCH / 2), s.h1, "patches_b")]
-            got = self._place([(build, (col_l + dx, ccy + dy))], new_plate=False)
-            if not got:
-                break
-            self.patches_b += got
-        if len(self.patches_b) < nb:
-            # no room between the patches: the extra round goes on the next plate, as a group
-            for o in self.patches_b:
-                self.plates[0].remove(o)
-            def build(cx, cy):
-                out = []
-                for i in range(nb):
-                    x = cx + (i % 2 - 0.5) * (PATCH + 8)
-                    y = cy + (i // 2 - 0.5) * (PATCH + 8)
-                    out.append(Obj("PATCH_B%d" % (i + 1), (x - PATCH / 2, y - PATCH / 2, x + PATCH / 2,
-                                                           y + PATCH / 2), s.h1, "patches_b"))
-                return out
-            self.patches_b = self._place([(build, (X(0.5), Y(0.5)))]) or []
-            if not self.patches_b:
-                self.warn.append("no room for the extra first-layer patches")
-
         # PA pattern(s): right column, between the tower slots; long rows wrap
         self.pa_objs, self.pa_fine_objs = [], []
+        self.pa_fine_needed = False
         if "pa" not in sk:
             # small bed: a coarser coarse pass where the fine pass still covers the gaps
             v = self.pa_vals
             half = max([abs(d) for d in self.pa_fine] or [0.0])
             if len(v) > max(3, self._pa_per_row()) and v[1] - v[0] <= half + 1e-9:
                 self.pa_vals = v[::2] + ([v[-1]] if (len(v) - 1) % 2 else [])
+                self.pa_fine_needed = True
                 self.warn.append("small bed: pressure advance coarse pass in %s steps (the fine pass fills in)"
                                  % fmt_val(2 * (v[1] - v[0])))
             labels = [fmt_val(v) for v in self.pa_vals]
@@ -1043,8 +1018,62 @@ class Session:
                     return [ob]
                 got = self._place([(build, (col_r, fy[i]))])
                 if not got:
-                    raise SystemExit("Printune: a retraction tower does not fit on this bed")
+                    raise SystemExit("Printune: a retraction tower does not fit on this bed "
+                                     "(too few rings for its height, or the bed is too small)")
                 self.towers += got
+
+        # extra patches: printed right after the first round, so they only need to stay
+        # off the other objects of plate 1 (they are low, the clearance rule doesn't apply)
+        nb = int(s.opt["patches_extra"]) if self.patches else 0
+        rank = {"patches": 0, "patches_b": 1}
+        for i in range(nb):
+            dx = (-1 if i % 2 == 0 else 1) * 16.0
+            dy = (-1 if i < 2 else 1) * 16.0
+            name = "PATCH_B%d" % (i + 1)
+            build = lambda cx, cy, name=name: [Obj(name, (cx - PATCH / 2, cy - PATCH / 2, cx + PATCH / 2,
+                                                          cy + PATCH / 2), s.h1, "patches_b")]
+            got = None
+            for cx, cy in self._candidates(build, (col_l + dx, ccy + dy)):
+                objs = build(cx, cy)
+                if all(self._on_bed(o) and not any(overlap(o.box, p.box, 0.5) for p in self.plates[0])
+                       for o in objs):
+                    got = objs
+                    break
+            if not got:
+                break
+            got[0].plate = 1
+            self.plates[0].append(got[0])
+            self.patches_b += got
+        if len(self.patches_b) < nb:
+            # no room: the extra round gets a plate of its own, right after plate 1
+            for o in self.patches_b:
+                self.plates[0].remove(o)
+            self.patches_b = []
+            out = []
+            for i in range(nb):
+                x = X(0.5) + (i % 2 - 0.5) * (PATCH + 8)
+                y = Y(0.5) + (i // 2 - 0.5) * (PATCH + 8)
+                out.append(Obj("PATCH_B%d" % (i + 1), (x - PATCH / 2, y - PATCH / 2, x + PATCH / 2,
+                                                       y + PATCH / 2), s.h1, "patches_b"))
+            b0 = out[0].box                         # room for a prime line: it waited hot
+            out[0].box = (b0[0], b0[1] - 6.0, b0[2], b0[3])
+            if all(self._on_bed(o) for o in out):
+                # tests already on plate 1 move after the extra round: onto its plate where
+                # they fit beside it (the patches are low), else onto a plate of their own
+                rest = [o for o in self.plates[0] if o.section != "patches"]
+                self.plates[0] = [o for o in self.plates[0] if o.section == "patches"]
+                if any(overlap(o.box, p.box, 0.5) for o in rest for p in out):
+                    self.plates[1:1] = [out, rest]
+                else:
+                    self.plates.insert(1, out + rest)
+                self.plates = [p for p in self.plates if p]
+                for k, p in enumerate(self.plates):
+                    for o in p:
+                        o.plate = k + 1
+                self.patches_b = out
+            else:
+                self.warn.append("no room for the extra first-layer patches")
+        self.plates[0].sort(key=lambda o: rank.get(o.section, 2))   # stable: keeps the rest in order
 
         self.objs = [o for p in self.plates for o in p]   # = print order
         if len(self.plates) > 1:
@@ -1076,8 +1105,9 @@ class Session:
         w, h = b[2] - b[0], b[3] - b[1]
         ox, oy = pref[0] - (b[0] + b[2]) / 2, pref[1] - (b[1] + b[3]) / 2
         yield pref
-        x0, x1 = bx0 + 2 + w / 2, bx1 - 2 - w / 2
-        y0, y1 = by0 + 2 + h / 2, by1 - 2 - h / 2
+        e = max(2.0, self.m - 6.0)     # the boxes include ~6 mm of prime line and label room
+        x0, x1 = bx0 + e + w / 2, bx1 - e - w / 2
+        y0, y1 = by0 + e + h / 2, by1 - e - h / 2
         if x1 < x0 or y1 < y0:
             return
         nx, ny = int((x1 - x0) // step) + 1, int((y1 - y0) // step) + 1
@@ -1086,6 +1116,11 @@ class Session:
         pts.sort(key=lambda p: (p[0] - pref[0]) ** 2 + (p[1] - pref[1]) ** 2)
         for p in pts:
             yield p
+
+    def _on_bed(self, o):
+        bx0, by0, bx1, by1 = self.s.bed
+        x0, y0, x1, y1 = o.box
+        return x0 >= bx0 + 1 and y0 >= by0 + 1 and x1 <= bx1 - 1 and y1 <= by1 - 1
 
     def _fits(self, objs, plate):
         """On the bed, no overlap, and the toolhead clears everything taller printed before."""
@@ -1133,7 +1168,8 @@ class Session:
             return out
         got = self._place([(build, pref)])
         if not got:
-            raise SystemExit("Printune: the pressure advance pattern does not fit on this bed")
+            raise SystemExit("Printune: the pressure advance pattern does not fit on this bed: "
+                             "use fewer values or a coarser step")
         return got
 
     def _pa_per_row(self):
@@ -1144,12 +1180,16 @@ class Session:
         """EM cubes: full size first; smaller cubes or 3 columns where the bed is small."""
         size0 = float(self.s.opt["em_size"])
         builds = []
-        for size, cols in ((size0, 2), (size0, 3), (min(size0, 25.0), 3), (min(size0, 20.0), 3)):
+        for size, cols in ((size0, 2), (size0, 3), (min(size0, 25.0), 3), (min(size0, 20.0), 3),
+                           (min(size0, 20.0), 4), (min(size0, 20.0), 6)):
             builds.append((lambda cx, cy, size=size, cols=cols:
                            self._em_block(cx, cy, labels, prefix, section, size, cols), pref))
         got = self._place(builds)
         if not got:
-            raise SystemExit("Printune: the flow cubes do not fit on this bed")
+            raise SystemExit("Printune: the flow cubes do not fit on this bed: use fewer flow values")
+        w = got[0].cube[2] - got[0].cube[0]
+        if w < size0 - 0.1:
+            self.warn.append("small bed: %.0f mm flow cubes" % w)
         return got
 
     @staticmethod
@@ -1210,7 +1250,6 @@ class Session:
         wr.set_accel(s.a_travel)
         wr.retracted = False
         wr.z = 0.0
-        self.cur_plate = 1
 
         # ---- 1. patches ----
         if self.patches:
@@ -1226,7 +1265,7 @@ class Session:
             if self.patches_b:
                 self._cp(wr, "_PRINTUNE_CP STEP=squish SKIP=%s" % ",".join(o.name for o in self.patches_b))
                 self._plate(wr, self.patches_b)
-                self._patch_round(wr, self.patches_b, prime=False)
+                self._patch_round(wr, self.patches_b, prime=self.patches_b[0].plate > 1)
                 if heat:
                     g(heat)
                 self._cp(wr, "_PRINTUNE_CP STEP=squish2 OBJ=%s" % self.patches_b[0].name)
@@ -1246,7 +1285,8 @@ class Session:
             for o in self.pa_objs:
                 self._pa(wr, o, fan)
             fine = ",".join(o.name for o in self.pa_fine_objs)
-            skip = ("SKIP=" + fine) if fine else ""
+            # no "skip the fine pass" button when the coarse pass was thinned out for a small bed
+            skip = ("SKIP=" + fine) if fine and not self.pa_fine_needed else ""
             self._cp(wr, "_PRINTUNE_CP STEP=pa VALUES=%s %s" % (vals, skip))
             g("_PRINTUNE_APPLY")
             if self.pa_fine_objs:
@@ -1307,11 +1347,11 @@ class Session:
     def _plate(self, wr, objs):
         """Checkpoint before a test that goes on a new plate: clear the plate, printer stays hot."""
         n = objs[0].plate
-        if n <= self.cur_plate:
+        if n <= 1:
             return
-        self.cur_plate = n
-        names = [o.name for o in self.plates[n - 1]]
-        self._cp(wr, "_PRINTUNE_CP STEP=plate N=%d OF=%d ALL=%s" % (n, len(self.plates), ",".join(names)))
+        # before every group on a later plate: the macro asks once per plate, and not at all
+        # when this group was skipped (a later group on the same plate asks instead)
+        self._cp(wr, "_PRINTUNE_CP STEP=plate N=%d ALL=%s" % (n, ",".join(o.name for o in objs)))
 
     def _cp(self, wr, cmd):
         """Checkpoint: park first so PAUSE (and RESUME's return move) keeps the nozzle off the prints."""
@@ -1347,7 +1387,7 @@ class Session:
         first = cubes[0]
         wr.safe_travel(first.cube[0] + 1, first.cube[3] + 2.0)
         obj_start(wr, first)
-        prime_line(wr, s, first.cube[0] + 1, first.cube[3] + 2.0, 28)
+        prime_line(wr, s, first.cube[0] + 1, first.cube[3] + 2.0, min(28.0, first.cube[2] - first.cube[0] - 2))
         obj_end(wr, first)
         for li, (z, kind) in enumerate(zip(zs, kinds)):
             if li == s.fan_off_layers:
