@@ -56,16 +56,19 @@ add_include() {
     $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
 }
 add_include printune_plugin.cfg
-# Fake accelerometer, input shaper and Shake&Tune: ACCEL=0 / SHAKETUNE=0 make a
-# printer without them, to see the steps greyed out. The fake accelerometer is
-# newer than some images, so it is linked from the host folder when there.
+# Simulated accelerometer, input shaper and Shake&Tune: ACCEL=0 / SHAKETUNE=0 make
+# a printer without them, to see the steps greyed out. sim_accel.py is linked from
+# the host folder when there, so it can be edited without a rebuild.
 acc=$cfg/testenv_accel.cfg
-fa=/home/pi/host/test_env/printer_config/fake_accel.py
-[ -f $fa ] || fa=/home/pi/default_config/fake_accel.py
+fa=/home/pi/host/test_env/printer_config/sim_accel.py
+[ -f $fa ] || fa=/home/pi/default_config/sim_accel.py
 st=/home/pi/kalico/klippy/extras/shaketune
+# an earlier, PC-only version of this used other file names
+sed -i '/^\[include sim_accel\.cfg\]/d; /^\[include shaketune\.cfg\]/d' $cfg/printer.cfg
+rm -f $cfg/sim_accel.cfg $cfg/shaketune.cfg /home/pi/kalico/klippy/extras/fake_accel.py
 if [ "${ACCEL:-1}" = 1 ] && [ -f $fa ]; then
-  ln -sfn $fa /home/pi/kalico/klippy/extras/fake_accel.py
-  printf '[fake_accel]\nx_modes: 52.0:0.08, 87:0.12:0.3\ny_modes: 41.0:0.10\n\n[resonance_tester]\naccel_chip: fake_accel\nprobe_points: 187.5,194,20\n\n[input_shaper]\n' > $acc
+  ln -sfn $fa /home/pi/kalico/klippy/extras/sim_accel.py
+  printf '[sim_accel]\nx_modes: 52.0:0.08, 87:0.12:0.3\ny_modes: 41.0:0.10\nbelt_a: 96\nbelt_b: 91\n\n[resonance_tester]\naccel_chip: sim_accel\nprobe_points: 187.5,194,20\n\n[input_shaper]\n' > $acc
   if [ "${SHAKETUNE:-1}" = 1 ]; then
     if [ -e $st ]; then
       printf '\n[shaketune]\n' >> $acc

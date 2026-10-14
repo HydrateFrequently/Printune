@@ -65,7 +65,8 @@ RUN curl -sSL -o /tmp/mainsail.zip https://github.com/mainsail-crew/mainsail/rel
 RUN mkdir -p printer_data/config printer_data/gcodes printer_data/logs printer_data/comms printer_data/database \
  && ln -s /home/pi/mainsail-config/mainsail.cfg printer_data/config/mainsail.cfg
 COPY --chown=pi printer_config/ /home/pi/default_config/
-RUN ln -s /home/pi/default_config/sim_thermal.py kalico/klippy/extras/sim_thermal.py
+RUN ln -s /home/pi/default_config/sim_thermal.py kalico/klippy/extras/sim_thermal.py \
+ && ln -s /home/pi/default_config/sim_accel.py kalico/klippy/extras/sim_accel.py
 
 USER root
 COPY config/nginx.conf /etc/nginx/conf.d/mainsail.conf

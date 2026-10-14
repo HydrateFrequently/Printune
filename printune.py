@@ -35,6 +35,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import printune_gen as gen  # noqa: E402
+import printune_belts as belts  # noqa: E402
 
 # Orca's filament preset keys (Preset.cpp, s_Preset_filament_options, 2.4.x),
 # without inherits/compatible_* (set below) and bed_type (a process setting).
@@ -227,6 +228,11 @@ class Printune:
         self.timer = None
         self.gen_timer = None
         self.errors = 0           # counts errors, so the page sees a repeated one
+        self.belt_tol = config.getfloat("belt_tolerance", 2., above=0.)
+        self.belts = {}           # belt tension session, for the page and the prompts
+        self.belt_now = None      # the belt being listened to (the test printer's fake plucks use it)
+        self.belt_plucks = 5
+        self._tool_info = None
         gcode = self.printer.lookup_object("gcode")
         self.gcode = gcode
         gcode.register_command(
@@ -239,6 +245,10 @@ class Printune:
             "_PRINTUNE_ABORT", self.cmd_PRINTUNE_ABORT, desc=self.cmd_PRINTUNE_ABORT_help)
         gcode.register_command(
             "_PRINTUNE_SOAK_SKIP", self.cmd_PRINTUNE_SOAK_SKIP, desc=self.cmd_PRINTUNE_SOAK_SKIP_help)
+        gcode.register_command(
+            "_PRINTUNE_BELTS_START", self.cmd_PRINTUNE_BELTS_START, desc=self.cmd_PRINTUNE_BELTS_START_help)
+        gcode.register_command(
+            "_PRINTUNE_BELT_LISTEN", self.cmd_PRINTUNE_BELT_LISTEN, desc=self.cmd_PRINTUNE_BELT_LISTEN_help)
 
     def get_status(self, eventtime):
         soak = {"active": False, "elapsed": 0., "min": self.soak_min, "max": self.soak_max,
@@ -249,8 +259,102 @@ class Printune:
                 "last_rel": self.last_rel, "state": self.state, "message": self.message,
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
+                "tools": self._tools(), "belts": self.belts,
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
                                   "soak": f["soak"]} for k, f in gen.FILAMENTS.items()}}
+
+    # ---------------- printer tuning: which tools are installed ----------------
+    def _tools(self):
+        # which tuning tools are installed: fixed once klippy is ready
+        if self._tool_info is None:
+            kin = ""
+            try:
+                kin = self.printer.lookup_object("configfile").get_status(
+                    self.reactor.monotonic())["settings"]["printer"]["kinematics"]
+            except Exception:
+                pass
+            look = self.printer.lookup_object
+            self._tool_info = {
+                "accel": look("resonance_tester", None) is not None,
+                "input_shaper": look("input_shaper", None) is not None,
+                "shaketune": look("shaketune", None) is not None,
+                "corexy": kin in ("corexy", "limited_corexy", "corexz", "limited_corexz"),
+                "kinematics": kin}
+        return self._tool_info
+
+    # ---------------- belt tension from plucks ----------------
+    cmd_PRINTUNE_BELTS_START_help = "Printune: start belt tensioning (TARGET=Hz PLUCKS=3|5)"
+
+    def cmd_PRINTUNE_BELTS_START(self, gcmd):
+        if self.printer.lookup_object("resonance_tester", None) is None:
+            raise gcmd.error("Printune: belt tension needs an accelerometer ([resonance_tester])")
+        target = gcmd.get_float("TARGET", 110., minval=20., maxval=400.)
+        plucks = gcmd.get_int("PLUCKS", 5, minval=3, maxval=5)
+        self.belt_plucks = plucks
+        self.belts = {"target": target, "plucks": plucks, "round": 0, "phase": "coarse",
+                      "A": None, "B": None, "heard": [], "advice": "Measure belt A", "done": False,
+                      "tol": self.belt_tol}
+        gcmd.respond_info("Printune: belt tension, target %.0f Hz, %d plucks per belt" % (target, plucks))
+
+    cmd_PRINTUNE_BELT_LISTEN_help = "Printune: record plucks of one belt (BELT=A|B) and find its frequency"
+
+    def cmd_PRINTUNE_BELT_LISTEN(self, gcmd):
+        if not self.belts:
+            raise gcmd.error("Printune: run _PRINTUNE_BELTS_START first")
+        belt = gcmd.get("BELT", "A").upper()
+        if belt not in ("A", "B"):
+            raise gcmd.error("Printune: BELT is A or B")
+        rt = self.printer.lookup_object("resonance_tester")
+        chips = getattr(rt, "accel_chips", None) or []
+        if not chips:
+            raise gcmd.error("Printune: no accelerometer found")
+        chip = chips[0][1]
+        n = self.belts["plucks"]
+        secs = gcmd.get_float("SECONDS", 2.0 + 1.3 * n, minval=2., maxval=30.)
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.wait_moves()
+        try:
+            # a second of background first (fans, motors), so they aren't taken for the belt
+            self.state, self.message = "listening", "Hands off the printer for a moment"
+            client = chip.start_internal_client()
+            toolhead.dwell(1.5)
+            client.finish_measurements()
+            quiet = client.get_samples()
+            self.belt_now = belt
+            self.message = "Pluck belt %s %d times, about once a second" % (belt, n)
+            client = chip.start_internal_client()
+            toolhead.dwell(secs)
+            client.finish_measurements()
+            samples = client.get_samples()
+        finally:
+            self.belt_now = None
+            self.state, self.message = "idle", ""
+        if not samples:
+            raise gcmd.error("Printune: the accelerometer sent no data")
+        t = [s[0] for s in samples]
+        res = belts.analyse(t, [s[1] for s in samples], [s[2] for s in samples],
+                            [s[3] for s in samples], target=self.belts["target"], expect=n,
+                            quiet=[[s[i] for s in quiet] for i in (1, 2, 3)])
+        b = dict(self.belts)                 # a new object: status updates send what changed
+        b[belt] = res
+        heard = sorted(set(b.get("heard", [])) | {belt}) if res["freq"] is not None else b.get("heard", [])
+        if heard == ["A", "B"]:
+            # both belts measured since the last instruction: the next one
+            b["round"] += 1
+            b["advice"], upd = belts.plan(b)
+            b.update(upd)
+            heard = []
+        else:
+            other = "B" if belt == "A" else "A"
+            b["advice"] = ("Pluck belt %s again" % belt if res["freq"] is None
+                           else "Now measure belt %s" % other)
+        b["heard"] = heard
+        self.belts = b
+        if res["freq"] is None:
+            gcmd.respond_info("Printune: belt %s: %s" % (belt, res["note"]))
+        else:
+            gcmd.respond_info("Printune: belt %s: %.1f Hz (average of %d plucks)%s" % (
+                belt, res["freq"], res["used"], (" - " + res["note"]) if res["note"] else ""))
 
     # ---------------- wizard: build and start a session ----------------
     cmd_PRINTUNE_START_help = "Printune: build a tuning session for a filament and start it"
