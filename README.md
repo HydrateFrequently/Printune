@@ -1,153 +1,129 @@
 # Printune
 
-3D printer and filament profile tuner for Kalico and Moonraker. It runs the tuning prints on the printer, asks for your picks in Mainsail or Fluidd, and writes the results into OrcaSlicer profiles.
+Filament tuning for Kalico printers, made for people who just want to press a button. Printune prints the tuning tests on your printer, asks you to pick the best one after each test (on your phone, in Mainsail or Fluidd), and writes the results into an **OrcaSlicer filament preset** you import with two clicks.
 
-Its first part, **ECAL**, is described below.
+- **One big blue button: Tuning Wizard.** Pick the filament type, give it a name, check the temperature range from the box, press Start. Printune builds the test prints for your printer, heat-soaks if you want, and walks you through every test.
+- **Or one test only:** first layer, pressure advance, flow, or retraction and temperature.
+- **Works on a phone.** The Printune page is made for a phone next to the printer, and works on a desktop and on small touch screens with a browser.
+- **Results go into the slicer, not the firmware.** Pressure advance, flow ratio, retraction and temperature are per filament, so they belong in the filament preset. The printer's own values are back when the session ends, so swapping filament can never leave a stale value behind.
 
-## ECAL: Ellis's tuning guide as one heat-soaked print
-
-ECAL turns Ellis's Print Tuning Guide into **one G-code session**. The printer heat-soaks once, then prints these tests in the guide's order:
-
-1. First-layer squish
-2. Pressure advance
-3. Extrusion multiplier
-4. Retraction
-
-Between tests the printer pauses, and Mainsail/Fluidd shows one button per tested value. The value you pick is applied straight away, so every later test is printed with your earlier picks, just as the guide intends. The chamber never cools between tests.
-
-It plugs into OrcaSlicer as a post-processing script, so it uses your printer, filament and process profiles, plus your own start and end G-code.
-
-| What | |
+| | |
 |---|---|
-| Prints | 1 session (all optional parts included): about 2 h 10–25 min of printing plus heating and your decision time (Orca's own estimate leaves out the pauses); about 17 m of filament (43 g ABS) |
-| Firmware | Klipper or Kalico, with `[exclude_object]`, `[pause_resume]`, `[respond]`, and Mainsail or Fluidd for the prompts |
-| Slicer | OrcaSlicer 2.x (tested with the 2.4.2 Linux build); standalone use also works |
-| Files | `ecal.py` (generator / Orca script), `ellis_calibration.cfg` (macros), `ecal_export.py` (Orca preset export, optional), `ECAL.stl` (placeholder object) |
+| Firmware | Kalico (mainline Klipper may work but is not tested), Moonraker, Mainsail or Fluidd |
+| Printer config | `[exclude_object]`, `[pause_resume]`, `[respond]`, `[virtual_sdcard]` (Mainsail's and Fluidd's standard configs have most of them) |
+| Slicer | OrcaSlicer 2.x for the preset (tested with 2.4.2) |
+| Session | all tests: about 2 h 10 min of printing plus heating and your decision time, about 17 m of filament |
+| Licence | GPL-3.0-or-later |
 
-### What's in the session, and why it is combined like this
+## Install
 
-Ellis's order is extruder → first layer → PA → EM → (PA/EM oddities, cooling) → retraction → overlap/stepover. Every test depends on the ones before it, so ECAL keeps that order. Each test is still printed exactly as Ellis prints it. Only the waiting in between is removed.
+On the printer (over SSH):
 
-| # | Test (Ellis section) | What prints | How you choose | Applied to later tests as |
+```
+cd ~ && git clone https://github.com/HydrateFrequently/Printune.git
+~/Printune/install.sh
+sudo systemctl restart moonraker klipper
+```
+
+`install.sh` links the files from the Printune folder (so `git pull` updates them) and:
+
+- links the Kalico plugin `printune.py` and the Moonraker page server `moonraker/printune_web.py`;
+- adds `[include printune.cfg]` and `[include printune_settings.cfg]` at the top of printer.cfg (backup in `printer.cfg.before-printune`) and `[printune_web]` to moonraker.conf;
+- writes `printune_settings.cfg` once, with every option commented out;
+- adds **Printune** to the Mainsail sidebar.
+
+Then open `printune_settings.cfg` and check two things:
+
+- `start_gcode`: how the test prints call your start macro. The default passes the temperatures under the common names (`PRINT_START BED=… BED_TEMP=… HOTEND=… EXTRUDER=… EXTRUDER_TEMP=…`).
+- `enclosed: True` on an enclosed printer, so ABS, ASA, PC and PA get a heat soak first.
+
+## Use it
+
+Open **Printune** in the Mainsail sidebar, or `http://<printer>/server/printune` on your phone (bookmark it or add it to the home screen).
+
+1. Press **Tuning Wizard**, or one of the single tests.
+2. Pick the filament type, name it (this becomes the preset name in Orca), set the nozzle range from the box and the bed temperature. Clean the plate and press **Start**.
+3. With heat soak on, the printer heats the bed with the toolhead parked high and the hotend off, and starts the tests by itself when the temperature levels off. **Skip the soak** starts them right away.
+4. After each test the printer pauses and the page shows one big button per printed value. Press the best one. The printer applies it and prints the next test with it.
+5. At the end the page shows your results and a **Download Orca preset** button. In Orca: **File › Import › Import Configs**, pick the file. The preset shows up under your filaments with the name you gave it, based on Orca's Generic preset for that type.
+
+No phone or page? The **PRINTUNE** macro button in Mainsail or Fluidd opens the same menu as prompts (Tuning Wizard, single tests, extruder calibration). It names the preset "<type> Printune"; rename it in Orca.
+
+If you cancel half-way, press **Reset after cancel** in the PRINTUNE menu (or run `_PRINTUNE_RESET`). It puts pressure advance, flow, firmware retraction and the idle timeout back. After a firmware restart there is nothing to put back.
+
+## The tests
+
+They run in this order because each one needs the picks before it. The heat soak is done once, and the printer stays hot between tests.
+
+| # | Test | What prints | How you pick | Goes into Orca as |
 |---|---|---|---|---|
-| 0 | Extruder calibration | nothing (hands-on, do it during the heat soak) | `ECAL_EXTRUDE_TEST`, then `ECAL_EXTRUDE_RESULT LEFT=<mm>` | live `rotation_distance` |
-| 1 | First layer squish | 9 patches, 25×25 mm, over the bed (corners, edges, centre), plus 4 optional extra patches | Babystep live while they print. Then press *Squish is good*, or *Print 4 more patches* to check the new offset | your Z offset |
-| 2 | Pressure advance | Ellis's pattern: 0–0.08 in 0.005 steps, 3 walls, 30 mm, 90° corners, 4 layers, numbered tab | Press the button for the sharpest corner. Then press *Fine pass* (±0.005 in 0.001 steps around your pick) or *Skip* | `SET_PRESSURE_ADVANCE` |
-| 3 | Extrusion multiplier | 30×30×3 mm cubes at flow ratio −4/−2/0/+2/+4 %. Each has 2 bottom layers, 30 % infill and a 100 % width monotonic top. Numbered tabs | Press the button for the best top surface. Then do an optional fine pass (±1 % in 0.5 % steps) | `M221` (EM) |
-| 4 | Retraction (optional) | 3 towers at nozzle +10 / 0 / −10 °C, rings 0–1.0 mm in 0.1 mm steps at 30 mm/s. Printed one at a time, hottest first, front to back | Before the towers a prompt asks whether to print them (Ellis: often unnecessary) and reminds you to brush the nozzle. After the last tower, press the cleanest temperature, then the ring number. Ellis: take 1–2 rings above where stringing stops | end-of-session summary (towers are printed with `SET_RETRACTION` per ring) |
-| - | Overlap (infill/perimeter) | nothing extra | Look at the EM cubes' top edges (Ellis does this with the same cubes) | - |
-| - | Max volumetric flow (Advanced) | nothing (extrude in air) | `ECAL_FLOW_TEST FLOW=<mm³/s>` | - |
-| - | PA/EM oddities, cooling, stepover | Guidance only in Ellis; no print | - | - |
+| 1 | First layer | 9 patches of 25×25 mm over the whole bed, plus 4 optional extra patches | Babystep with the big ±0.01 / ±0.05 buttons while they print. Then *Squish is good*, or *Print 4 more patches* to check | your Z offset (see below) |
+| 2 | Pressure advance | a row of small hollow frames, one per value (0–0.08 in 0.005 steps). Each long edge prints slow, fast, slow, so a wrong PA shows as a bulge or gap where the speed changes. Values are printed under the frames | the frame with the most even edges; then an optional fine pass in 0.001 steps | Filament › Pressure advance (Enable ticked) |
+| 3 | Flow | 30×30×3 mm cubes at −4 … +4 % flow, numbered | the smoothest top surface; then an optional fine pass in 0.5 % steps | Filament › Flow ratio |
+| 4 | Retraction and temperature | up to 4 towers across your temperature range, hottest first, each with rings at 0–1.0 mm retraction | the cleanest tower, then the ring 1–2 above where stringing stops | Filament › Nozzle temperature and retraction (below) |
 
-**Why not more in parallel?** Every test needs the value picked in the one before:
+Hands-on tools (on the page under *Hands-on tools*, no print): extruder calibration (`rotation_distance`, a printer setting that stays in printer.cfg) and a max volumetric flow test.
 
-- EM cubes printed with the wrong PA have bad edges and seams.
-- Retraction depends on both PA and EM.
+Where each result goes if you type it in by hand:
 
-So the tests must stay sequential. ECAL makes them sequential within one heat soak instead of four separate prints.
-
-**Why one tower per temperature?** Ellis prints the towers one at a time from hottest to coolest so that the temperature can drop between them without a wait. The towers stand in a column from front to back, with the hottest at the front. The nozzle therefore never travels over a finished tower.
-
-**Where the results go.** The session changes PA, flow and retraction only while it runs; at the end the printer's own values are back. Everything that depends on the filament goes into the **Orca filament profile**, so swapping filament can never leave a stale firmware value behind.
-
-With `ecal_export.py` installed (see Installing), the printer writes that profile for you at the end of the session: `config/ecal_exports/<filament name>.json`, an Orca filament preset holding the profile you sliced with plus your picks (flow ratio, pressure advance, nozzle temperature, retraction). Download it in Mainsail (Machine › ecal_exports) and import it in Orca with **File › Import › Import Configs**.
-
-- It is always a new preset, so your own presets are never replaced: *My ABS* becomes *My ABS (ECAL)*, on the same parent, and *Generic ABS @System* becomes *Generic ABS (ECAL)*, inheriting from it. Tuning an *(ECAL)* preset again updates it (Orca asks first).
-- It holds every filament setting the slice was made with, so your own edits carry over. Settings Orca does not write into the G-code (such as the printer list a preset is limited to) come from the parent.
-- The preset's notes list every value that changed, the date and the preset it came from.
-
-The summary prompt also lists each value with its field, for typing them in by hand:
-
-| Result | Where it goes |
+| Result | Orca field |
 |---|---|
-| Pressure advance | Filament › Pressure advance (tick *Enable*); Orca then sends it at the start of every print with that filament |
-| Extrusion multiplier | Filament › Flow ratio |
-| Nozzle temperature (from the towers) | Filament › Nozzle temperature |
-| Retraction, firmware retraction | Filament › Advanced › Filament start G-code: `SET_RETRACTION RETRACT_LENGTH=… RETRACT_SPEED=… UNRETRACT_SPEED=…`. Give every filament profile its own line, because firmware retraction is one setting for the whole printer |
-| Retraction, slicer retraction | Filament › Setting overrides › Retraction length and speeds |
+| Pressure advance | Filament › Pressure advance (tick *Enable*) |
+| Flow | Filament › Flow ratio |
+| Nozzle temperature | Filament › Nozzle temperature |
+| Retraction with firmware retraction | Filament › Advanced › Filament start G-code: `SET_RETRACTION RETRACT_LENGTH=… RETRACT_SPEED=… UNRETRACT_EXTRA_LENGTH=0 UNRETRACT_SPEED=…` (firmware retraction is one setting for the whole printer, so every filament needs its own line) |
+| Retraction without it | Filament › Setting overrides › Retraction length and speeds |
 | Max volumetric flow | Filament › Max volumetric speed |
-| Extruder `rotation_distance` | printer.cfg `[extruder]` (hardware, the same for every filament, as Ellis says) |
-| First-layer squish | your printer's Z offset (`Z_OFFSET_APPLY_PROBE` + `SAVE_CONFIG` after the print, or however your Beacon setup stores it) |
+| First-layer squish | your Z offset: `Z_OFFSET_APPLY_PROBE` + `SAVE_CONFIG`, or however your probe setup stores it |
 
-### Installing
+## Settings (`printune_settings.cfg`)
 
-1. Copy `ellis_calibration.cfg` next to `printer.cfg` and add `[include ellis_calibration.cfg]`. You also need `[exclude_object]`, `[pause_resume]` and `[respond]` (most Mainsail/Fluidd configs already have them). Restart.
-2. In Orca, go to **Process › Others › Post-processing scripts** and add one line:
-   `/usr/bin/python3 /path/to/ecal.py;`
-   On Windows: `"C:\Path\To\python.exe" "C:\path\to\ecal.py";`
-   Python 3.8 or newer is enough; the script uses only the standard library.
-3. Make sure **Label objects** is enabled in Orca for this printer. ECAL reads the options in the object name from the labels Orca writes.
+| Option | Default | |
+|---|---|---|
+| `start_gcode` | `PRINT_START BED={bed} BED_TEMP={bed} HOTEND={nozzle} EXTRUDER={nozzle} EXTRUDER_TEMP={nozzle}` | start of every test print; `M190`/`M109` follow it in case your macro uses other names |
+| `end_gcode` | `PRINT_END` | |
+| `enclosed` | `False` | offer a heat soak (default on for ABS, ASA, PC, PA) |
+| `chamber_sensor` | the nozzle | sensor the soak watches, e.g. `temperature_sensor chamber`. Without one the nozzle is used: hotend off, parked high, it reads the air around it |
+| `soak_min`, `soak_max` | `10`, `60` | minutes |
+| `soak_rate` | `0.5` | the soak is done when the sensor rises less than this (°C) in 5 minutes |
+| `pa_range` | `0-0.08/0.005` | direct drive; a bowden needs a longer range, e.g. `0-1.0/0.05` |
+| `ret_range` | `0-1.0/0.1` | retraction rings (mm); bowden e.g. `0-4/0.4` |
+| `orca_settings` | | other Orca settings for the test prints, one `key = value` per line (speeds, accelerations, line widths) |
+| `path` | `config/printune_exports` | where the Orca presets are written |
 
-The script does nothing to any slice that has no object named `ECAL…` on the plate, so it is safe to leave it enabled in your normal process profile.
+The test prints use the bed size from the axis limits. If your axes reach past the plate (a wiper or purge bucket), set the plate in `orca_settings`: `printable_area = 0x0,350x0,350x350,0x350`.
 
-4. Optional, recommended: the Orca preset export. Link `ecal_export.py` into Kalico's plugin folder and add `[ecal_export]` to printer.cfg, then restart:
-   `ln -s ~/printer_data/config/ecal_export.py ~/kalico/klippy/plugins/`
-   (mainline Klipper: `~/klipper/klippy/extras/`). Without it the session works the same and the summary lists the values to type in.
-5. Optional: with `[save_variables]` in printer.cfg every pick is also logged to that file as you tap it, with no restart. It is a record only; nothing is loaded back. `ECAL_SAVED` lists it.
+The test prints use the printer's own limits: the bed size from the axis limits, the nozzle and filament diameter from `[extruder]`, and speeds and accelerations capped at `max_velocity` and `max_accel`. Layer height is half the nozzle diameter.
 
-### Running a session
+## Slicing the session in Orca instead (advanced)
 
-1. Load your usual filament and process profile. Put `ECAL.stl` on an empty plate; its position does not matter. Slice and send. The file is saved as `…_ECAL.gcode`.
-   - To change test ranges, rename the object in Orca's object list (options are separated by spaces; a trailing `.stl` is ignored), e.g.
-     `ECAL pa=0-0.06/0.005 temps=255,245,235 skip=patches`
-   - All options (with defaults):
+You can also slice the session in Orca with your own process profile, so the test prints use exactly your speeds and widths:
 
-     | Option | Default | Meaning |
-     |---|---|---|
-     | `skip` | – | any of `patches,pa,em,ret` |
-     | `pa` | `0-0.08/0.005` | coarse PA range/step (Ellis default for direct drive) |
-     | `pa_fine` | `0.005/0.001` | ± range/step around your pick; `0` = no fine pass |
-     | `em` | profile flow −4…+4 % / 2 % | e.g. `0.92-1.00/0.02` |
-     | `em_fine` | `0.01/0.005` | ± range/step around your pick; `0` = none |
-     | `em_infill`, `em_size`, `em_height` | `30`, `30`, `3` | cube settings |
-     | `ret` | `0-1.0/0.1` | rings (mm); max 1 mm for direct drive per Ellis |
-     | `ret_speed` | `30` | retract/unretract speed, mm/s |
-     | `temps` | nozzle +10, 0, −10 | tower temperatures, hottest first |
-     | `patches_extra` | `4` | optional second round of squish patches |
-     | `clearance` | Orca's extruder clearance radius | toolhead radius for the collision check |
+1. Orca › Process › Others › Post-processing scripts: `/usr/bin/python3 /path/to/printune_gen.py;` (Windows: `"C:\Path\To\python.exe" "C:\path\to\printune_gen.py";`). It touches only slices with an object named `Printune…` on the plate.
+2. Turn on **Label objects**. Put `Printune.stl` on an empty plate, slice and print. Options go in the object name, e.g. `Printune pa=0-0.06/0.005 temps=255,245,235 skip=patches` (`_` works instead of `/`).
+3. The exported preset is then a copy of the filament preset you sliced with plus your picks, named "<preset> (Printune)".
 
-2. Start the print. Your `PRINT_START` heats and heat-soaks as usual. Do the **hands-on tests during the soak**: `ECAL_EXTRUDE_TEST` / `ECAL_EXTRUDE_RESULT`, and `ECAL_FLOW_TEST` if you want it.
-   Ellis asks for at least an hour of heat soak on a big enclosed printer before the first-layer patches; if your `PRINT_START` soaks less, let the chamber settle first.
-3. Follow the prompts. Each prompt pauses the printer with the hotend and bed held hot; the idle timeout is lifted to 3 h during the session. Pick a value. The printer resumes, prints the next test with that value and pauses again.
-4. After the towers, the summary prompt appears and your original PA, flow and retraction settings are restored. To see the summary again, run `_ECAL_SUMMARY`.
-5. If you cancel mid-session, run `ECAL_RESET` to restore PA, flow, retraction and the idle timeout. If you forget, the next session notices the unfinished one and keeps your original values. After a firmware restart there is nothing to restore.
+Options: `skip` (`patches,pa,em,ret`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, `ret_speed`, `temps`, `patches_extra`, `em_infill`, `em_size`, `em_height`, `clearance`. Orca only runs the script on export or upload, and not with *Use 3MF instead of G-code* switched on.
 
-Standalone, without Orca:
+## Caveats
 
-```
-python3 ecal.py --from any_sliced_by_orca.gcode -o session.gcode   # profile from an Orca G-code
-python3 ecal.py -o session.gcode --set nozzle_temperature=245 --start "PRINT_START BED=100 HOTEND=245"
-```
+- **Z offset.** The squish test uses live babystepping. Whether `Z_OFFSET_APPLY_PROBE` stores it depends on your probe; with a contact-mode probe, or a start macro that sets its own offset, save it the way your setup expects.
+- **Toolhead clearance.** The layout keeps travel away from finished prints using a 65 mm toolhead radius. The PA frames are under 1 mm tall and may sit closer.
+- **Small beds.** The layout is checked; a bed too small for a test gives a message instead of a squeezed layout.
+- **Login.** The page uses Moonraker's API like Mainsail does. On a printer with `force_logins`, add your phone's network to `trusted_clients`.
+- **Not tried yet:** importing the preset with the Orca app's File menu (tested with the Orca 2.4.2 command line), KlipperScreen (it can't show web pages), mainline Klipper.
+- **During a pause** the toolhead parks above the prints at the back of the bed. Don't babystep while paused.
 
-### Assumptions and caveats
-
-- **Bed size.** Standalone defaults assume a 375×388 mm bed, the ZeroG Nebula 370. In Orca the printable area of your printer profile is used. A layout check refuses beds that are too small.
-- **Toolhead clearance.** The EVA toolhead geometry is not modelled. The check uses Orca's *extruder clearance radius*, and the example was checked with 65 mm.
-  - Results: no travel crosses printed material, and nothing goes off the bed.
-  - The PA patterns sit within 65 mm of the towers. They are under 1 mm tall, so this only matters if something on the toolhead hangs lower than 1.2 mm.
-- **Z offset.** Squish uses live babystepping. Whether `Z_OFFSET_APPLY_PROBE` / `SAVE_CONFIG` stores the babystep depends on your probe setup. With a Beacon in contact mode, or with a start macro that sets its own offset, save it the way your macro expects.
-- **Retraction.** With firmware retraction (`[firmware_retraction]`, Orca *Use firmware retraction*), the towers use G10/G11 with `SET_RETRACTION` per ring. Without it, ECAL's own `_ECAL_R` / `_ECAL_U` macros do the ring retractions. Either way, your normal retraction is restored at the end.
-- **How much fits.** On a 375×388 mm bed one pass holds up to 6 EM cubes, about 30 PA patterns and 3 towers. Larger ranges are refused with a message instead of being squeezed in.
-- **Temperatures.** The patches print at your first-layer temperature, everything after them at the normal nozzle temperature (Ellis tunes at printing conditions). The towers use nozzle +10/0/−10 °C.
-- **During a pause** the toolhead parks 10 mm above the tallest print at the back of the bed, so it never rests on a test piece. Do not babystep while paused; RESUME returns to the saved Z.
-- **Mainline Klipper.** Tested against Kalico's sources. Mainline's firmware retraction does not ignore G10/G11 inside a skipped object, so the first object after a skipped one can start about one retraction length short; its prime line takes most of that up.
-- **No tool changes.** A `T0` or `ACTIVATE_EXTRUDER` resets Klipper's flow multiplier, so don't put one in a pause macro.
-- **Orca pitfalls.** Orca runs post-processing scripts only when it exports or uploads the G-code: its preview, time estimate and the project file show the plain placeholder. With the printer option *Use 3MF instead of G-code* switched on, Orca skips post-processing scripts on upload; switch it off for this print. Orca puts the full name into a `; printing object` comment, which is where ECAL reads the options from.
-- **The Orca plugin system** (main branch, not in any release yet) is not used. The post-processing script works on released versions.
-- **Preset export.** It needs the session to be sliced by Orca with one filament (the settings block at the end of the G-code is where the profile comes from); a standalone session gets the summary only. The nozzle temperature from the towers goes into *Nozzle temperature* only; check the first-layer temperature yourself. Tested with the Orca 2.4.2 command-line slicer loading the exported file; the File › Import menu in the Orca app has not been tried yet.
-- **Step separator.** A file name cannot hold `/`, so `_` works too: `ECAL pa=0-0.06_0.005.stl`.
-- **Pressure advance.** If PA is disabled in the filament profile, ECAL keeps whatever PA the printer currently has as the baseline.
-- **What is copied from Ellis, and what is not.** Ellis's own PA tool and his EM/retraction instructions are the source for every test parameter. The cooling, PA/EM oddities and stepover sections have no print to make.
-
-### Files
+## Files
 
 | File | |
 |---|---|
-| `ecal.py` | generator and Orca post-processing script (GPL-3.0-or-later, because the PA pattern is ported from Ellis's GPL-3.0 tool) |
-| `ellis_calibration.cfg` | Klipper/Kalico macros: prompts, pick handling, hands-on tests |
-| `ecal_export.py` | Kalico plugin: writes the Orca filament preset at the end of a session (`ECAL_EXPORT`) |
-| `ECAL.stl` | 20×20×0.6 mm placeholder that triggers the script |
-| `example_session.gcode` | a standalone example (Nebula 370 defaults, generic ABS) |
-| `tools/check_gcode.py` | offline simulator: off-bed moves, widths, travel crashes, toolhead clearance |
-| `tools/plot_layout.py`, `tools/render_shaded.py` | the rough layout plot and the shaded render (`renders/`) |
-| `test_env/` | virtual Kalico printer (Docker, 20x speed) for testing the session and the macros, see test_env/README.md |
+| `printune_gen.py` | builds the session G-code (also the Orca post-processing script) |
+| `printune.cfg` | macros: the PRINTUNE menu, prompts, picks, heat soak, hands-on tests |
+| `printune.py` | Kalico plugin: wizard start (`_PRINTUNE_START`), heat soak, Orca preset export |
+| `moonraker/printune_web.py`, `web/index.html` | the Printune page and the Moonraker component that serves it |
+| `install.sh` | installer |
+| `Printune.stl` | placeholder object for the Orca route |
+| `example_session.gcode` | an example session (370 mm bed, ABS) |
+| `tools/` | offline G-code checker and layout renders |
+| `test_env/` | a virtual Kalico printer (Docker, 20x speed) for testing, see test_env/README.md |

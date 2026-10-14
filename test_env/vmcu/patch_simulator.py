@@ -7,7 +7,8 @@ serial input and declares no pin names. This patch adds:
   - pin names PA0..PH7 so printer.cfg can use normal-looking pins
   - input pins read 1 (so '^PIN' endstops report "triggered" at once)
   - a "reset" command (exits; the supervisor restarts it) for FIRMWARE_RESTART
-Everything else (steps, PWM, ADC) is accepted and discarded; temperatures
+Everything else (steps, PWM, ADC) is accepted and discarded (steps are
+counted, never timed); temperatures
 come from the host-side sim_thermal module.
 Time is the host's CLOCK_MONOTONIC, so running both this MCU and klippy
 under libfaketime with the same speed-up makes the whole printer fast.
@@ -79,6 +80,17 @@ if "serial_poll_rx" not in s:
     # usleep(1) really sleeps ~60 us; under a 10-20x speed-up that makes
     # steps late ("Stepper too far in past"). Busy-poll instead (one core).
     s = rep(s, "    usleep(1);\n", "", p)
+    # ...but don't spin while idle: sleep until 2 ms before the next timer,
+    # or until klippy sends something (at most 50 ms at a time)
+    s = rep(s, "#include <unistd.h> // usleep", "#include <poll.h> // poll\n#include <unistd.h> // usleep", p)
+    s = rep(s, "    // XXX - sleep to prevent excessive cpu usage in simulator\n",
+            "    int32_t diff = next_wake_time - timer_read_time();\n"
+            "    int32_t margin = timer_from_us(2000);\n"
+            "    if (diff > margin) {\n"
+            "        int ms = (diff - margin) / timer_from_us(1000);\n"
+            "        struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };\n"
+            "        poll(&pfd, 1, ms > 50 ? 50 : ms);\n"
+            "    }\n", p)
     open(p, "w").write(s)
 # A virtual MCU drives no hardware, and under a time speed-up the OS
 # scheduler's jitter is multiplied too. Late events are harmless here, so
@@ -98,4 +110,27 @@ for rel, call in LATE:
         open(p, "w").write(s)
     elif "virtual MCU: ignored" not in s:
         sys.exit("patch_simulator: %s not found in %s" % (call, rel))
+
+# Steps: nothing is driven, so don't time them at all. The host still plans
+# every move (that is what macros and prompts talk to); the MCU takes each
+# queue_step at once: it only updates the step position (homing and
+# GET_POSITION read it) and runs no step timers. That removes almost all of
+# the virtual MCU's work and its overload crashes at a time speed-up.
+p = os.path.join(sys.argv[1], "src", "stepper.c")
+s = open(p).read()
+if "vmcu: steps taken at once" not in s:
+    s = rep(s, """        m->flags |= MF_DIR;
+    }
+    if (s->count) {""", """        m->flags |= MF_DIR;
+    }
+    // vmcu: steps taken at once, no step timers
+    if (!(flags & SF_NEED_RESET)) {
+        s->flags = flags;
+        s->position = ((m->flags & MF_DIR) ? -s->position : s->position) + m->count;
+    }
+    move_free(m);
+    irq_enable();
+    return;
+    if (s->count) {""", p)
+    open(p, "w").write(s)
 print("patched", src)

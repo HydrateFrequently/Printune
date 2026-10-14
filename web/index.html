@@ -1,0 +1,1198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Printune</title>
+<!-- Printune web UI. GPL-3.0. Self-contained: no external resources. -->
+<style>
+:root {
+  --bg: #121212; --card: #1e1e1e; --card2: #2a2a2a; --line: #3a3a3a;
+  --text: #eeeeee; --muted: #a8a8a8; --primary: #2196F3; --primary-text: #ffffff;
+  --primary-soft: rgba(33,150,243,.16); --ok: #4caf50; --warn: #ffb300; --err: #ef5350;
+  --err-soft: rgba(239,83,80,.14); --radius: 12px;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f3f5; --card: #ffffff; --card2: #eceef1; --line: #d0d4da;
+    --text: #1b1b1b; --muted: #5d636b; --primary: #1976D2;
+    --primary-soft: rgba(25,118,210,.12); --ok: #2e7d32; --warn: #b26a00; --err: #c62828;
+    --err-soft: rgba(198,40,40,.10);
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+}
+[hidden] { display: none !important; }
+header.top {
+  display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+  background: var(--card); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 5;
+}
+header.top h1 { margin: 0; font-size: 22px; letter-spacing: .3px; }
+header.top .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+header.top .dot.ok { background: var(--ok); }
+header.top .dot.bad { background: var(--err); }
+header.top .state { margin-left: auto; color: var(--muted); font-size: 15px; text-align: right; min-width: 0; }
+main { max-width: 760px; margin: 0 auto; padding: 12px 16px 40px; }
+.banner { padding: 10px 16px; text-align: center; font-size: 15px; background: var(--card2); color: var(--muted); }
+.banner.err { background: var(--err-soft); color: var(--err); }
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px; margin: 12px 0;
+}
+.card h2 { margin: 0 0 8px; font-size: 20px; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+h2.section { font-size: 18px; margin: 22px 2px 6px; color: var(--muted); font-weight: 600; }
+p { margin: 6px 0; }
+.muted { color: var(--muted); }
+.small { font-size: 15px; }
+.help { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
+button, .btn {
+  font: inherit; font-size: 17px; min-height: 48px; padding: 10px 16px; border-radius: 10px;
+  border: 2px solid var(--primary); background: transparent; color: var(--primary);
+  cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+  text-align: center; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  overflow-wrap: anywhere;
+}
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, .btn:focus-visible, input:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+.primary { background: var(--primary); color: var(--primary-text); }
+.danger { border-color: var(--err); color: var(--err); }
+.warning { border-color: var(--warn); color: var(--warn); }
+.info { border-color: var(--muted); color: var(--text); }
+.error-btn { background: var(--err); border-color: var(--err); color: #fff; }
+.text-btn { border-color: transparent; color: var(--muted); }
+.block { display: flex; width: 100%; }
+.big {
+  width: 100%; min-height: 92px; font-size: 24px; font-weight: 700; flex-direction: column; gap: 4px;
+  background: var(--primary); color: var(--primary-text); border: none; border-radius: var(--radius);
+  padding: 16px;
+}
+.big small { font-size: 15px; font-weight: 400; opacity: .92; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.test-card {
+  display: flex; flex-direction: column; align-items: flex-start; text-align: left; gap: 2px;
+  min-height: 88px; padding: 14px 16px; border: 1px solid var(--line); background: var(--card);
+  color: var(--text); border-radius: var(--radius); width: 100%;
+}
+.test-card b { font-size: 18px; color: var(--primary); }
+.test-card span { color: var(--muted); font-size: 15px; }
+details.card > summary {
+  cursor: pointer; font-size: 19px; font-weight: 600; min-height: 48px; display: flex; align-items: center;
+  list-style: none;
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::before { content: "\25B8"; margin-right: 10px; color: var(--primary); }
+details.card[open] > summary::before { content: "\25BE"; }
+.tool { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.row > * { flex: 1 1 auto; }
+.field { margin: 18px 0; }
+.field > label, .field > .label { display: block; font-weight: 600; margin-bottom: 8px; font-size: 18px; }
+.stepnum { color: var(--primary); margin-right: 6px; }
+input[type=text], input[type=number] {
+  font: inherit; font-size: 18px; width: 100%; min-height: 52px; padding: 10px 14px;
+  border-radius: 10px; border: 1px solid var(--line); background: var(--card2); color: var(--text);
+}
+.chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
+.chips button { border-width: 2px; border-color: var(--line); color: var(--text); font-weight: 600; }
+.chips button[aria-pressed=true] { background: var(--primary); border-color: var(--primary); color: var(--primary-text); }
+.stepper { display: grid; grid-template-columns: 64px 1fr 64px; gap: 8px; align-items: center; }
+.stepper output { text-align: center; font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stepper-label { color: var(--muted); font-size: 15px; margin: 8px 0 4px; }
+.toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  min-height: 56px; border: 1px solid var(--line); color: var(--text); background: var(--card2);
+  margin: 6px 0; text-align: left;
+}
+.toggle .sw { flex: none; width: 52px; height: 30px; border-radius: 15px; background: var(--line); position: relative; }
+.toggle .sw::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%;
+  background: #fff; transition: left .15s;
+}
+.toggle[aria-checked=true] .sw { background: var(--primary); }
+.toggle[aria-checked=true] .sw::after { left: 25px; }
+.err-box { background: var(--err-soft); color: var(--err); border-radius: 10px; padding: 10px 14px; margin: 10px 0; }
+/* Prompt card */
+#prompt { scroll-margin-top: 72px; border: 2px solid var(--primary); box-shadow: 0 0 0 4px var(--primary-soft); }
+#prompt h2 { font-size: 22px; }
+#prompt .ptext { margin: 8px 0; overflow-wrap: anywhere; }
+#prompt .pbuttons { display: grid; gap: 10px; margin: 12px 0; }
+#prompt .pgroup { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); margin: 12px 0; }
+#prompt .pgroup button, #prompt .pbuttons button { min-height: 56px; font-weight: 600; }
+#prompt .pfooter { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+#prompt .pfooter button { flex: 1 1 140px; }
+/* Running */
+.run-head h2 { margin: 0; font-size: 22px; overflow-wrap: anywhere; }
+.stages { display: flex; list-style: none; margin: 14px 0 4px; padding: 0; gap: 4px; }
+.stages li { flex: 1 1 0; text-align: center; font-size: 14px; color: var(--muted); min-width: 0; }
+.stages li .b { display: block; height: 6px; border-radius: 3px; background: var(--line); margin-bottom: 6px; }
+.stages li.done .b { background: var(--ok); }
+.stages li.cur .b { background: var(--primary); }
+.stages li.cur { color: var(--text); font-weight: 700; }
+.stage-now { display: none; font-weight: 600; margin-top: 4px; }
+@media (max-width: 599px) {
+  .stages li span.t { display: none; }
+  .stage-now { display: block; }
+}
+.temps { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.temp { background: var(--card2); border-radius: 10px; padding: 10px 12px; }
+.temp .v { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.temp .v small { font-size: 17px; color: var(--muted); font-weight: 400; }
+.bar { height: 14px; background: var(--card2); border-radius: 7px; overflow: hidden; margin: 8px 0; }
+.bar > div { height: 100%; background: var(--primary); width: 0; transition: width .4s; }
+.bignum { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 8px 0; }
+.kv div { background: var(--card2); border-radius: 10px; padding: 8px 12px; }
+.kv b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.baby { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+.baby button { font-weight: 700; padding: 10px 4px; }
+.log { margin-top: 10px; font-size: 15px; background: var(--card2); border-radius: 10px; padding: 8px 12px; overflow-wrap: anywhere; }
+.log:empty { display: none; }
+.log p { margin: 4px 0; }
+.center { text-align: center; }
+/* Dialog and toast */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center;
+  justify-content: center; padding: 16px; z-index: 20;
+}
+.dialog { background: var(--card); border-radius: var(--radius); padding: 20px; width: 100%; max-width: 420px; border: 1px solid var(--line); }
+.dialog p { font-size: 19px; margin: 0 0 16px; }
+.dialog .row button { flex: 1 1 120px; }
+#toast {
+  position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 600px; margin: 0 auto; z-index: 30;
+  background: var(--err); color: #fff; padding: 12px 16px; border-radius: 10px; font-size: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.4); overflow-wrap: anywhere;
+}
+#toast.ok { background: var(--card2); color: var(--text); }
+@media (max-height: 420px) and (orientation: landscape) {
+  body { font-size: 16px; }
+  .big { min-height: 64px; font-size: 20px; }
+  .test-card { min-height: 64px; }
+  .card { padding: 12px; margin: 8px 0; }
+  header.top { position: static; padding: 6px 16px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="dot" id="dot" aria-hidden="true"></span>
+  <h1>Printune</h1>
+  <span class="state" id="hdrState"></span>
+</header>
+<div class="banner" id="connBanner" role="status">Connecting to the printer...</div>
+<div class="banner err" id="klippyBanner" role="status" hidden>Kalico is not ready</div>
+
+<main>
+  <!-- Prompt card: shown on top of whatever screen is visible -->
+  <section class="card" id="prompt" aria-live="polite" hidden>
+    <h2 id="pTitle"></h2>
+    <div id="pBody"></div>
+    <div id="pResults" hidden>
+      <a class="btn primary block big" id="dlBtn" href="#" download style="min-height:64px;font-size:20px">Download Orca preset</a>
+      <p class="help" id="dlHelp"></p>
+    </div>
+    <div class="pfooter" id="pFooter"></div>
+    <button type="button" class="block" id="doneBtn" hidden style="margin-top:12px">Done</button>
+  </section>
+
+  <!-- HOME -->
+  <section id="home" hidden>
+    <div class="card" id="busyCard" hidden>
+      <h2>The printer is busy</h2>
+      <p id="busyText"></p>
+    </div>
+    <div id="startArea">
+      <button type="button" class="big" id="wizardBtn">Tuning Wizard
+        <small>Runs every test, one after the other, and guides you through each pick</small></button>
+      <h2 class="section">Or run one test</h2>
+      <div class="grid2">
+        <button type="button" class="test-card" data-test="squish"><b>First layer (squish)</b>
+          <span>Prints patches so you can dial in the nozzle height.</span></button>
+        <button type="button" class="test-card" data-test="pa"><b>Pressure advance</b>
+          <span>Even walls without bulges or gaps where the speed changes.</span></button>
+        <button type="button" class="test-card" data-test="em"><b>Flow (extrusion multiplier)</b>
+          <span>Smooth top surfaces: not too much, not too little plastic.</span></button>
+        <button type="button" class="test-card" data-test="ret"><b>Retraction &amp; temperature</b>
+          <span>Towers that show which settings string the least.</span></button>
+      </div>
+    </div>
+    <details class="card" id="tools">
+      <summary>Hands-on tools</summary>
+      <div class="tool" style="border:0;margin-top:0">
+        <h3>Extruder calibration</h3>
+        <p class="small muted">Heat the nozzle, mark the filament 120 mm above the extruder entry, tap Extrude,
+          measure what is left to the mark.</p>
+        <div class="stepper-label">Nozzle temperature</div>
+        <div class="stepper" data-stepper="heat"></div>
+        <button type="button" class="block" id="heatBtn" style="margin-top:8px"></button>
+        <button type="button" class="block primary" id="extrudeBtn" style="margin-top:10px">Extrude 100 mm</button>
+        <div class="field" style="margin-bottom:0">
+          <label for="leftIn">mm left to the mark</label>
+          <div class="row">
+            <input type="number" id="leftIn" inputmode="decimal" step="0.1" min="0" max="120" placeholder="e.g. 20">
+            <button type="button" id="calcBtn" style="flex:0 0 auto">Calculate</button>
+          </div>
+        </div>
+        <div class="log" id="extLog" aria-live="polite"></div>
+      </div>
+      <div class="tool">
+        <h3>Max flow test</h3>
+        <p class="small muted">Extrudes 100 mm at the chosen volumetric flow. Raise it until less than 100 mm goes in.</p>
+        <div class="stepper-label">Flow (mm³/s)</div>
+        <div class="stepper" data-stepper="flow"></div>
+        <button type="button" class="block primary" id="flowBtn" style="margin-top:8px">Extrude</button>
+        <div class="log" id="flowLog" aria-live="polite"></div>
+      </div>
+      <div class="tool">
+        <button type="button" class="block danger" id="nozzleOffBtn">Turn nozzle off</button>
+      </div>
+    </details>
+  </section>
+
+  <!-- FILAMENT FORM -->
+  <section id="form" hidden>
+    <div class="card">
+      <h2 id="formTitle">Tuning Wizard</h2>
+      <div class="err-box" id="formErr" hidden></div>
+      <div class="field">
+        <span class="label" id="typeLbl"><span class="stepnum">1</span>Filament type</span>
+        <div class="chips" id="typeChips" role="group" aria-labelledby="typeLbl"></div>
+      </div>
+      <div class="field">
+        <label for="nameIn"><span class="stepnum">2</span>Name</label>
+        <input type="text" id="nameIn" maxlength="40" autocomplete="off" autocapitalize="words" spellcheck="false">
+        <p class="help">This becomes the name of the filament preset in Orca.</p>
+      </div>
+      <div class="field">
+        <label for="brandIn"><span class="stepnum">3</span>Brand <span class="muted">(optional)</span></label>
+        <input type="text" id="brandIn" maxlength="40" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <span class="label"><span class="stepnum">4</span>Nozzle temperature range</span>
+        <div class="stepper-label">Lowest (°C)</div>
+        <div class="stepper" data-stepper="tmin"></div>
+        <div class="stepper-label">Highest (°C)</div>
+        <div class="stepper" data-stepper="tmax"></div>
+        <p class="help">Retraction towers print at up to 4 temperatures in this range; the other tests use the middle.</p>
+      </div>
+      <div class="field">
+        <span class="label"><span class="stepnum">5</span>Bed temperature (°C)</span>
+        <div class="stepper" data-stepper="bed"></div>
+      </div>
+      <div class="field" id="soakField" hidden>
+        <span class="label"><span class="stepnum">6</span>Heat soak</span>
+        <button type="button" class="toggle" role="switch" id="soakTg" aria-checked="false">
+          <span>Heat soak the enclosure first</span><span class="sw"></span></button>
+        <p class="help">Heats the enclosure with the toolhead parked high and waits until the temperature levels off.</p>
+      </div>
+      <div class="field">
+        <span class="label"><span class="stepnum" id="testsNum">6</span>Tests</span>
+        <div id="testToggles"></div>
+      </div>
+      <button type="button" class="big" id="startBtn" style="min-height:64px">Start</button>
+      <button type="button" class="block text-btn" id="backBtn" style="margin-top:6px">Back</button>
+    </div>
+  </section>
+
+  <!-- RUNNING -->
+  <section id="running" hidden>
+    <div class="card run-head">
+      <h2 id="runTitle">Printune</h2>
+      <p class="muted" id="runSub"></p>
+      <ol class="stages" id="stages"></ol>
+      <div class="stage-now" id="stageNow"></div>
+      <p id="runMsg" class="muted"></p>
+    </div>
+    <div class="card" id="soakCard" hidden>
+      <h2>Heat soak</h2>
+      <div class="kv">
+        <div><span class="muted small">Elapsed</span><b id="soakElapsed">0:00</b></div>
+        <div><span class="muted small">Temperature</span><b id="soakTemp">-</b></div>
+        <div><span class="muted small">Rise per 5 min</span><b id="soakRise">-</b></div>
+      </div>
+      <p class="small muted" id="soakRange"></p>
+      <p>Waiting for the temperature to level off (less than 0.5 °C rise in 5 min)</p>
+      <button type="button" class="block" id="soakSkipBtn">Skip the soak</button>
+    </div>
+    <div class="card" id="babyCard" hidden>
+      <h2>Squish</h2>
+      <p>Z offset: <span class="bignum" id="babyVal">+0.000</span> mm</p>
+      <p class="muted small">Lower = more squish</p>
+      <div class="baby">
+        <button type="button" data-z="-0.05">-0.05</button>
+        <button type="button" data-z="-0.01">-0.01</button>
+        <button type="button" data-z="0.01">+0.01</button>
+        <button type="button" data-z="0.05">+0.05</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="temps">
+        <div class="temp"><span class="muted small">Nozzle</span>
+          <div class="v" id="tNozzle">-</div></div>
+        <div class="temp"><span class="muted small">Bed</span>
+          <div class="v" id="tBed">-</div></div>
+      </div>
+      <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="progBar"><div id="progFill"></div></div>
+      <p class="small muted" id="progText"></p>
+    </div>
+    <div class="center">
+      <button type="button" class="danger" id="cancelBtn">Cancel</button>
+    </div>
+  </section>
+</main>
+<div id="toast" role="alert" hidden></div>
+
+<script>
+"use strict";
+
+// ---------- constants ----------
+const TYPES = ["PLA", "PETG", "ABS", "ASA", "PC", "PA", "TPU"];
+const FALLBACK_FILAMENTS = {
+  PLA: { tmin: 195, tmax: 225, bed: 60, soak: false },
+  PETG: { tmin: 225, tmax: 255, bed: 75, soak: false },
+  ABS: { tmin: 235, tmax: 265, bed: 100, soak: true },
+  ASA: { tmin: 240, tmax: 270, bed: 100, soak: true },
+  PC: { tmin: 260, tmax: 290, bed: 110, soak: true },
+  PA: { tmin: 250, tmax: 280, bed: 90, soak: true },
+  TPU: { tmin: 210, tmax: 240, bed: 50, soak: false },
+};
+const TESTS = [
+  { key: "squish", label: "First layer (squish)", stage: "First layer" },
+  { key: "pa", label: "Pressure advance", stage: "Pressure advance" },
+  { key: "em", label: "Flow (extrusion multiplier)", stage: "Flow" },
+  { key: "ret", label: "Retraction & temperature", stage: "Retraction" },
+];
+const SUBSCRIBE = {
+  print_stats: null, display_status: null, virtual_sdcard: null, pause_resume: null, idle_timeout: null,
+  extruder: ["temperature", "target"], heater_bed: ["temperature", "target"],
+  toolhead: ["homed_axes"], gcode_move: ["homing_origin"],
+  printune: null, "gcode_macro _PRINTUNE": null,
+};
+const NAME_RE = /[^A-Za-z0-9 ._()+\-]/g;
+
+// ---------- small helpers ----------
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs, text) {
+  const e = document.createElement(tag);
+  for (const k in attrs || {}) {
+    if (k === "class") e.className = attrs[k];
+    else e.setAttribute(k, attrs[k]);
+  }
+  if (text != null) e.textContent = text;
+  return e;
+}
+function show(id, on) { $(id).hidden = !on; }
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+function cleanName(s) { return String(s || "").replace(NAME_RE, "").slice(0, 40); }
+function safeNum(v, digits) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(digits) : null;
+}
+function mmss(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+function store(key, val) {
+  try {
+    if (val === undefined) return JSON.parse(localStorage.getItem(key) || "null");
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch (e) { /* storage unavailable */ }
+  return null;
+}
+
+let toastTimer = null;
+function toast(msg, ok) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = ok ? "ok" : "";
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ok ? 3000 : 7000);
+}
+
+// In-page confirm dialog; resolves true/false.
+function ask(text, yesLabel, danger) {
+  return new Promise((resolve) => {
+    const ov = el("div", { class: "overlay", role: "dialog", "aria-modal": "true" });
+    const box = el("div", { class: "dialog" });
+    box.appendChild(el("p", null, text));
+    const row = el("div", { class: "row" });
+    const no = el("button", { type: "button" }, "No");
+    const yes = el("button", { type: "button", class: danger ? "error-btn" : "primary" }, yesLabel || "Yes");
+    row.append(no, yes);
+    box.appendChild(row);
+    ov.appendChild(box);
+    const done = (v) => { ov.remove(); resolve(v); };
+    no.onclick = () => done(false);
+    yes.onclick = () => done(true);
+    ov.addEventListener("click", (e) => { if (e.target === ov) done(false); });
+    document.body.appendChild(ov);
+    yes.focus();
+  });
+}
+
+// ---------- state ----------
+const S = {};             // merged printer status
+let klippyState = "";     // "ready", "startup", "shutdown", "error", "disconnected"
+let connected = false;
+let view = "home";        // user's choice when not running: "home" | "form"
+let starting = false;     // Start sent, waiting for the plugin to pick it up
+let startTime = 0;
+let startPrev = null;     // plugin state/message when Start was pressed (to ignore a stale error)
+let resultsDismissed = store("printune.dismissed") || "";
+
+function obj(name) { return S[name] || {}; }
+function pt() { return obj("printune"); }
+function macro() { return obj("gcode_macro _PRINTUNE"); }
+function printState() { return obj("print_stats").state || ""; }
+function printFile() { return obj("print_stats").filename || ""; }
+function isPrinting() { return ["printing", "paused"].includes(printState()); }
+function isOurFile() { return printFile().startsWith("printune/"); }
+function filaments() {
+  const f = pt().filaments;
+  return f && typeof f === "object" && Object.keys(f).length ? f : FALLBACK_FILAMENTS;
+}
+function merge(dst, src) {
+  for (const k in src) {
+    const v = src[k];
+    if (v && typeof v === "object" && !Array.isArray(v) && dst[k] && typeof dst[k] === "object" && !Array.isArray(dst[k])) {
+      merge(dst[k], v);
+    } else {
+      dst[k] = v;
+    }
+  }
+}
+
+// ---------- websocket JSON-RPC ----------
+let ws = null, rpcId = 1, backoff = 1000, reconnectTimer = null, klippyTimer = null;
+const pending = new Map();
+
+function wsUrl() {
+  return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/websocket";
+}
+
+function connect() {
+  clearTimeout(reconnectTimer);
+  try {
+    ws = new WebSocket(wsUrl());
+  } catch (e) {
+    scheduleReconnect();
+    return;
+  }
+  ws.onopen = () => {
+    connected = true;
+    backoff = 1000;
+    render();
+    checkKlippy();
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg.id != null && pending.has(msg.id)) {
+      const p = pending.get(msg.id);
+      pending.delete(msg.id);
+      if (msg.error) p.reject(msg.error); else p.resolve(msg.result);
+    } else if (msg.method) {
+      onNotify(msg.method, msg.params || []);
+    }
+  };
+  ws.onclose = () => {
+    connected = false;
+    for (const p of pending.values()) p.reject({ message: "Connection lost" });
+    pending.clear();
+    render();
+    scheduleReconnect();
+  };
+  ws.onerror = () => { /* onclose follows */ };
+}
+
+function scheduleReconnect() {
+  connected = false;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connect, backoff);
+  backoff = Math.min(backoff * 2, 15000);
+  render();
+}
+
+function rpc(method, params) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== 1) { reject({ message: "Not connected to the printer" }); return; }
+    const id = rpcId++;
+    pending.set(id, { resolve, reject });
+    ws.send(JSON.stringify({ jsonrpc: "2.0", method, params: params || {}, id }));
+  });
+}
+
+function errText(err) {
+  if (err && (err.code === 401 || err.code === 403)) return "Moonraker needs a login: add this device to trusted_clients";
+  let m = (err && err.message) || String(err);
+  // Moonraker wraps Klipper errors as a python dict string: {'error': 'WebRequestError', 'message': '...'}
+  const mm = /'message':\s*'([^']*)'/.exec(m) || /"message":\s*"([^"]*)"/.exec(m);
+  if (mm) m = mm[1];
+  return m;
+}
+
+function runGcode(script, quiet) {
+  return rpc("printer.gcode.script", { script }).catch((err) => {
+    const t = errText(err);
+    if (!quiet) toast(t);
+    if (err && err.code === 401) authBanner();
+    throw err;
+  });
+}
+
+function authBanner() {
+  $("klippyBanner").textContent = "Moonraker needs a login: add this device to trusted_clients";
+  $("klippyBanner").hidden = false;
+}
+
+async function checkKlippy() {
+  clearTimeout(klippyTimer);
+  try {
+    const info = await rpc("server.info");
+    klippyState = info.klippy_state || "";
+  } catch (err) {
+    if (err && err.code === 401) { authBanner(); return; }
+    klippyState = "";
+  }
+  render();
+  if (klippyState === "ready") {
+    await subscribe();
+  } else if (connected) {
+    klippyTimer = setTimeout(checkKlippy, 2000);
+  }
+}
+
+async function subscribe() {
+  try {
+    const res = await rpc("printer.objects.subscribe", { objects: SUBSCRIBE });
+    for (const k in S) delete S[k];
+    merge(S, res.status || {});
+  } catch (err) {
+    if (err && err.code === 401) { authBanner(); return; }
+    klippyTimer = setTimeout(checkKlippy, 2000);
+    return;
+  }
+  try {
+    const st = await rpc("server.gcode_store", { count: 200 });
+    resetPrompt();
+    for (const line of st.gcode_store || []) handleLine(line.message || "", true);
+  } catch (e) { /* history is optional */ }
+  render();
+}
+
+function onNotify(method, params) {
+  switch (method) {
+    case "notify_status_update":
+      merge(S, params[0] || {});
+      render();
+      break;
+    case "notify_gcode_response":
+      handleLine(String(params[0] || ""), false);
+      break;
+    case "notify_klippy_ready":
+      klippyState = "ready";
+      subscribe();
+      break;
+    case "notify_klippy_shutdown":
+      klippyState = "shutdown";
+      render();
+      break;
+    case "notify_klippy_disconnected":
+      klippyState = "disconnected";
+      render();
+      clearTimeout(klippyTimer);
+      klippyTimer = setTimeout(checkKlippy, 2000);
+      break;
+  }
+}
+
+// ---------- console lines and the action:prompt protocol ----------
+let draft = null;          // prompt being built (between begin and show)
+let prompt = null;         // prompt on screen
+let promptSeq = 0;         // bumps on every new prompt
+let promptRendered = -1;
+let buttonsLocked = false, lockTimer = null;
+let logTarget = null;      // which tools log gets the next "Printune:" replies
+
+function resetPrompt() { draft = null; prompt = null; promptSeq++; }
+
+function parseButton(arg) {
+  const parts = arg.split("|");
+  const label = parts[0].trim();
+  const gcode = (parts[1] || "").trim() || label;
+  const style = (parts[2] || "").trim().toLowerCase() || "secondary";
+  return { label, gcode, style };
+}
+
+function handleLine(line, replay) {
+  let s = line.trim();
+  if (s.startsWith("//")) s = s.slice(2).trim();
+  if (s.startsWith("action:prompt_")) {
+    handlePrompt(s.slice(14), replay);
+    return;
+  }
+  if (s.startsWith("echo:")) s = s.slice(5).trim();
+  if (!replay && s.startsWith("Printune") && logTarget) addLog(logTarget, s);
+}
+
+function handlePrompt(s, replay) {
+  const sp = s.indexOf(" ");
+  const cmd = sp < 0 ? s : s.slice(0, sp);
+  const arg = sp < 0 ? "" : s.slice(sp + 1).trim();
+  const lastGroup = () => {
+    const it = draft && draft.items[draft.items.length - 1];
+    return it && it.type === "group" && it.open ? it : null;
+  };
+  switch (cmd) {
+    case "begin":
+      draft = { title: arg, items: [], footer: [] };
+      break;
+    case "text":
+      if (draft) draft.items.push({ type: "text", text: arg });
+      break;
+    case "button": {
+      if (!draft) break;
+      const g = lastGroup();
+      if (g) g.list.push(parseButton(arg));
+      else draft.items.push({ type: "button", btn: parseButton(arg) });
+      break;
+    }
+    case "button_group_start":
+      if (draft) draft.items.push({ type: "group", open: true, list: [] });
+      break;
+    case "button_group_end": {
+      const g = lastGroup();
+      if (g) g.open = false;
+      break;
+    }
+    case "footer_button":
+      if (draft) draft.footer.push(parseButton(arg));
+      break;
+    case "show":
+      if (draft) {
+        prompt = draft;
+        promptSeq++;
+        unlockButtons();
+        if (!replay) {
+          render();
+          requestAnimationFrame(() => $("prompt").scrollIntoView({ behavior: "smooth", block: "start" }));
+        }
+      }
+      break;
+    case "end":
+      draft = null;
+      if (prompt) { prompt = null; promptSeq++; if (!replay) render(); }
+      break;
+  }
+}
+
+function unlockButtons() {
+  buttonsLocked = false;
+  clearTimeout(lockTimer);
+  for (const b of $("prompt").querySelectorAll("button[data-g]")) b.disabled = false;
+}
+
+function pressPromptButton(gcode) {
+  buttonsLocked = true;
+  for (const b of $("prompt").querySelectorAll("button[data-g]")) b.disabled = true;
+  clearTimeout(lockTimer);
+  lockTimer = setTimeout(unlockButtons, 3000);
+  runGcode(gcode).catch(() => unlockButtons());
+}
+
+function promptButton(b) {
+  const cls = { primary: "primary", secondary: "", info: "info", warning: "warning", error: "error-btn" }[b.style] || "";
+  const btn = el("button", { type: "button", class: cls, "data-g": "1" }, b.label);
+  btn.disabled = buttonsLocked;
+  btn.onclick = () => pressPromptButton(b.gcode);
+  return btn;
+}
+
+function isResultsPrompt() { return !!prompt && /results/i.test(prompt.title); }
+
+function renderPrompt() {
+  show("prompt", !!prompt);
+  if (!prompt) return;
+  if (promptRendered !== promptSeq) {
+    promptRendered = promptSeq;
+    $("pTitle").textContent = prompt.title || "Printune";
+    const body = $("pBody");
+    body.textContent = "";
+    let solo = null;
+    for (const it of prompt.items) {
+      if (it.type === "button") {
+        if (!solo) { solo = el("div", { class: "pbuttons" }); body.appendChild(solo); }
+        solo.appendChild(promptButton(it.btn));
+        continue;
+      }
+      solo = null;
+      if (it.type === "text") body.appendChild(el("p", { class: "ptext" }, it.text));
+      else if (it.type === "group") {
+        const g = el("div", { class: "pgroup" });
+        for (const b of it.list) g.appendChild(promptButton(b));
+        body.appendChild(g);
+      }
+    }
+    const foot = $("pFooter");
+    foot.textContent = "";
+    // On the results prompt our own Done button replaces a plain "close" footer button
+    const footer = isResultsPrompt() ? prompt.footer.filter((b) => !/action:prompt_end/.test(b.gcode)) : prompt.footer;
+    for (const b of footer) foot.appendChild(promptButton(b));
+    foot.hidden = !footer.length;
+  }
+  renderResultsExtras();
+}
+
+function renderResultsExtras() {
+  const res = isResultsPrompt();
+  const rel = pt().last_rel || "";
+  const name = pt().last_name || "";
+  const canDl = res && rel && !rel.startsWith("/");
+  show("pResults", !!canDl);
+  if (canDl) {
+    const href = "/server/files/" + rel.split("/").map(encodeURIComponent).join("/");
+    $("dlBtn").setAttribute("href", href);
+    $("dlBtn").setAttribute("download", (name || "printune") + ".json");
+    $("dlHelp").textContent = "Orca: File > Import > Import Configs, pick the file. It shows up under your filaments as " +
+      (name || "the preset name") + ".";
+  }
+  show("doneBtn", res);
+  $("doneBtn").className = "block" + (res && !($("pResults").hidden) ? "" : " primary");
+}
+
+// ---------- tools log ----------
+function addLog(id, text) {
+  const log = $(id);
+  log.appendChild(el("p", null, text));
+  while (log.children.length > 4) log.removeChild(log.firstChild);
+}
+
+// ---------- steppers ----------
+const steppers = {};
+function makeStepper(name, opts) {
+  const host = document.querySelector('[data-stepper="' + name + '"]');
+  const minus = el("button", { type: "button", "aria-label": "Lower " + opts.label }, "-" + opts.step);
+  const out = el("output", { "aria-live": "polite", "aria-label": opts.label });
+  const plus = el("button", { type: "button", "aria-label": "Raise " + opts.label }, "+" + opts.step);
+  host.append(minus, out, plus);
+  const st = {
+    value: opts.value, min: opts.min, max: opts.max,
+    set(v) {
+      this.value = clamp(Math.round(v), this.min, this.max);
+      out.textContent = this.value + (opts.unit || "");
+      if (opts.onChange) opts.onChange(this.value);
+    },
+  };
+  minus.onclick = () => st.set(st.value - opts.step);
+  plus.onclick = () => st.set(st.value + opts.step);
+  st.set(opts.value);
+  steppers[name] = st;
+  return st;
+}
+
+// ---------- form ----------
+const form = { mode: "wizard", type: "PLA", soak: false, tests: new Set(["squish", "pa", "em", "ret"]) };
+
+function defaultsFor(type) {
+  const f = filaments()[type] || FALLBACK_FILAMENTS[type] || FALLBACK_FILAMENTS.PLA;
+  return {
+    name: type + " Printune", brand: "",
+    tmin: Number(f.tmin) || 200, tmax: Number(f.tmax) || 230, bed: Number(f.bed) || 60, soak: !!f.soak,
+  };
+}
+
+function loadType(type) {
+  form.type = type;
+  const d = Object.assign(defaultsFor(type), store("printune.form." + type) || {});
+  $("nameIn").value = cleanName(d.name) || type + " Printune";
+  $("brandIn").value = cleanName(d.brand);
+  steppers.tmin.set(d.tmin);
+  steppers.tmax.set(d.tmax);
+  steppers.bed.set(d.bed);
+  form.soak = !!d.soak;
+  renderForm();
+}
+
+function saveForm() {
+  store("printune.form." + form.type, {
+    name: $("nameIn").value, brand: $("brandIn").value,
+    tmin: steppers.tmin.value, tmax: steppers.tmax.value, bed: steppers.bed.value, soak: form.soak,
+  });
+  store("printune.lastType", form.type);
+}
+
+function openForm(mode) {
+  form.mode = mode;
+  form.tests = new Set(mode === "wizard" ? TESTS.map((t) => t.key) : [mode]);
+  $("formTitle").textContent = mode === "wizard" ? "Tuning Wizard" : (TESTS.find((t) => t.key === mode) || {}).label;
+  $("formErr").hidden = true;
+  buildChips();
+  const last = store("printune.lastType");
+  loadType(filaments()[last] ? last : (filaments()[form.type] ? form.type : Object.keys(filaments())[0]));
+  view = "form";
+  render();
+  window.scrollTo(0, 0);
+}
+
+function buildChips() {
+  const host = $("typeChips");
+  host.textContent = "";
+  const keys = Object.keys(filaments());
+  const order = TYPES.filter((t) => keys.includes(t)).concat(keys.filter((t) => !TYPES.includes(t)));
+  for (const t of order) {
+    const b = el("button", { type: "button", "data-type": t, "aria-pressed": "false" }, t);
+    b.onclick = () => { saveForm(); loadType(t); };
+    host.appendChild(b);
+  }
+}
+
+function buildTestToggles() {
+  const host = $("testToggles");
+  for (const t of TESTS) {
+    const b = el("button", { type: "button", class: "toggle", role: "switch", "data-key": t.key, "aria-checked": "false" });
+    b.append(el("span", null, t.label), el("span", { class: "sw" }));
+    b.onclick = () => {
+      if (form.tests.has(t.key)) form.tests.delete(t.key); else form.tests.add(t.key);
+      renderForm();
+    };
+    host.appendChild(b);
+  }
+}
+
+function renderForm() {
+  for (const b of $("typeChips").children) b.setAttribute("aria-pressed", String(b.dataset.type === form.type));
+  const enclosed = !!pt().enclosed;
+  show("soakField", enclosed);
+  $("testsNum").textContent = enclosed ? "7" : "6";
+  $("soakTg").setAttribute("aria-checked", String(form.soak));
+  for (const b of $("testToggles").children) b.setAttribute("aria-checked", String(form.tests.has(b.dataset.key)));
+  $("startBtn").disabled = !form.tests.size;
+}
+
+function buildStartCommand() {
+  const name = cleanName($("nameIn").value).trim() || form.type + " Printune";
+  const brand = cleanName($("brandIn").value).trim();
+  const type = String(form.type).replace(/[^A-Za-z0-9]/g, "");
+  const tests = TESTS.map((t) => t.key).filter((k) => form.tests.has(k)).join(",");
+  const soak = pt().enclosed && form.soak ? 1 : 0;
+  let cmd = "_PRINTUNE_START TYPE=" + type + ' NAME="' + name + '"';
+  if (brand) cmd += ' VENDOR="' + brand + '"';
+  cmd += " TMIN=" + steppers.tmin.value + " TMAX=" + steppers.tmax.value + " BED=" + steppers.bed.value +
+    " SOAK=" + soak + " TESTS=" + tests;
+  return cmd.replace(/[;#\r\n]/g, "");
+}
+
+async function startSession() {
+  $("formErr").hidden = true;
+  if (!form.tests.size) return;
+  if (!(await ask("Make sure the plate is clean and empty. Start?", "Start"))) return;
+  saveForm();
+  store("printune.soakOn", pt().enclosed && form.soak ? 1 : 0);
+  // a results prompt from the last session must not show during this one
+  prompt = null;
+  promptSeq++;
+  runGcode("RESPOND TYPE=command MSG=action:prompt_end").catch(() => {});
+  starting = true;
+  startTime = Date.now();
+  startPrev = { state: pt().state, message: pt().message, errors: pt().errors };
+  render();
+  try {
+    await runGcode(buildStartCommand(), true);
+  } catch (err) {
+    starting = false;
+    formError(errText(err));
+  }
+}
+
+function formError(text) {
+  view = "form";
+  $("formErr").textContent = text;
+  $("formErr").hidden = false;
+  render();
+  window.scrollTo(0, 0);
+}
+
+// ---------- running screen ----------
+function currentStage() {
+  const soak = pt().soak || {};
+  if (soak.active) return "soak";
+  if (pt().state === "soaking") return "soak";
+  if (isResultsPrompt() || (printState() === "complete" && !starting && pt().state !== "generating")) return "results";
+  const msg = (obj("display_status").message || "").trim();
+  if (/^Printune soak/i.test(msg)) return "soak";
+  const m = /^Printune (\d)\/4/i.exec(msg);
+  if (m) return TESTS[Number(m[1]) - 1] ? TESTS[Number(m[1]) - 1].key : "";
+  if (prompt) {
+    const pm = /^Printune (\d)\/4/i.exec(prompt.title);
+    if (pm && TESTS[Number(pm[1]) - 1]) return TESTS[Number(pm[1]) - 1].key;
+  }
+  return "";
+}
+
+function stageList() {
+  const ses = pt().session || {};
+  const tests = Array.isArray(ses.tests) && ses.tests.length ? ses.tests : TESTS.map((t) => t.key);
+  const list = [];
+  const soak = pt().soak || {};
+  if (ses.soak || soak.active || pt().state === "soaking" || store("printune.soakOn") || /^Printune soak/i.test(obj("display_status").message || "")) {
+    list.push({ key: "soak", label: "Heat soak" });
+  }
+  for (const t of TESTS) if (tests.includes(t.key)) list.push({ key: t.key, label: t.stage });
+  list.push({ key: "results", label: "Results" });
+  return list;
+}
+
+function renderStages(cur) {
+  const list = stageList();
+  const idx = list.findIndex((s) => s.key === cur);
+  const host = $("stages");
+  host.textContent = "";
+  list.forEach((s, i) => {
+    const li = el("li", { class: i < idx ? "done" : (i === idx ? "cur" : "") });
+    if (i === idx) li.setAttribute("aria-current", "step");
+    li.append(el("span", { class: "b" }), el("span", { class: "t" }, s.label));
+    host.appendChild(li);
+  });
+  $("stageNow").textContent = idx >= 0 ? "Step " + (idx + 1) + " of " + list.length + ": " + list[idx].label : "";
+}
+
+function tempText(o) {
+  const t = Number(o.temperature), g = Number(o.target);
+  if (!Number.isFinite(t)) return "-";
+  return Math.round(t) + "°" + (g > 0 ? " / " + Math.round(g) + "°" : " / off");
+}
+
+function setTemp(id, o) {
+  const node = $(id);
+  const txt = tempText(o);
+  const parts = txt.split(" / ");
+  node.textContent = parts[0];
+  if (parts[1]) node.appendChild(el("small", null, " / " + parts[1]));
+}
+
+function renderRunning() {
+  const ses = pt().session || {};
+  const fil = ses.type || "";
+  $("runTitle").textContent = ses.name || (isOurFile() ? printFile().replace(/^printune\//, "").replace(/\.gcode$/i, "") : "Printune");
+  $("runSub").textContent = fil ? "Filament: " + fil : "";
+  const cur = currentStage();
+  renderStages(cur);
+
+  let msg = "";
+  if (pt().state === "generating" || (starting && !isPrinting())) msg = "Preparing the test prints...";
+  else if (printState() === "paused" && !prompt) msg = "Paused";
+  $("runMsg").textContent = msg;
+
+  const soak = pt().soak || {};
+  show("soakCard", !!soak.active);
+  if (soak.active) {
+    $("soakElapsed").textContent = mmss(soak.elapsed);
+    $("soakTemp").textContent = Number.isFinite(Number(soak.temp)) && soak.temp != null ? Number(soak.temp).toFixed(1) + " °C" : "-";
+    $("soakRise").textContent = soak.rise == null ? "measuring..." : (soak.rise >= 0 ? "+" : "") + Number(soak.rise).toFixed(1) + " °C";
+    $("soakRange").textContent = "At least " + mmss(soak.min) + ", at most " + mmss(soak.max) +
+      (soak.sensor ? " (sensor: " + soak.sensor + ")" : "");
+  }
+
+  const baby = cur === "squish" && printState() === "printing";
+  show("babyCard", baby);
+  if (baby) {
+    const ho = obj("gcode_move").homing_origin || [0, 0, 0];
+    const z = (Number(ho[2]) || 0) - (Number(macro().z0) || 0);
+    $("babyVal").textContent = (z >= 0 ? "+" : "-") + Math.abs(z).toFixed(3);
+  }
+
+  setTemp("tNozzle", obj("extruder"));
+  setTemp("tBed", obj("heater_bed"));
+  const prog = clamp(Number(obj("virtual_sdcard").progress) || 0, 0, 1);
+  const pct = isOurFile() ? Math.round(prog * 100) : 0;
+  $("progFill").style.width = pct + "%";
+  $("progBar").setAttribute("aria-valuenow", String(pct));
+  $("progText").textContent = isPrinting() && isOurFile() ? pct + " % printed" : "";
+}
+
+// ---------- home ----------
+function renderHome() {
+  const busy = isPrinting() && !isOurFile();
+  show("busyCard", busy);
+  if (busy) $("busyText").textContent = "The printer is busy printing " + printFile() + ".";
+  show("startArea", !busy);
+  show("tools", !busy);
+  const enc = filaments();
+  const t = enc[form.type] || {};
+  $("heatBtn").textContent = "Heat nozzle to " + steppers.heat.value + " °C";
+  if (!steppers.heat.touched && t.tmin) {
+    steppers.heat.set(Math.round((Number(t.tmin) + Number(t.tmax)) / 2 / 5) * 5);
+  }
+}
+
+// Print finished but no results prompt (e.g. page opened later): build one from the macro values.
+function maybeSyntheticResults() {
+  const m = macro();
+  if (prompt || printState() !== "complete" || !isOurFile() || !m.tested) return;
+  if (resultsDismissed === printFile()) return;
+  const items = [];
+  const tested = String(m.tested).split(",");
+  if (tested.includes("pa")) items.push({ type: "text", text: "Pressure advance: " + Number(m.pa).toFixed(4) });
+  if (tested.includes("em")) {
+    const fr = Number(m.em) / (Number(m.pfr) || 1);
+    items.push({ type: "text", text: "Orca flow ratio: " + fr.toFixed(3) });
+  }
+  if (tested.includes("ret") && Number(m.ret_temp) > 0) {
+    items.push({ type: "text", text: "Retraction " + Number(m.ret_len).toFixed(2) + " mm @ " +
+      Math.round(Number(m.ret_speed)) + " mm/s, nozzle " + m.ret_temp + " °C" });
+  }
+  if (!items.length) return;
+  prompt = { title: "Printune results", items, footer: [] };
+  promptSeq++;
+}
+
+// ---------- top-level render ----------
+function isRunning() {
+  const st = pt().state;
+  return (isPrinting() && isOurFile()) || st === "soaking" || st === "generating" || starting;
+}
+
+function render() {
+  show("connBanner", !connected);
+  $("connBanner").textContent = "Connecting to the printer...";
+  const kb = $("klippyBanner");
+  if (kb.textContent.indexOf("trusted_clients") < 0) {
+    kb.textContent = "Kalico is not ready" + (klippyState && klippyState !== "ready" ? " (" + klippyState + ")" : "");
+    kb.hidden = !connected || klippyState === "ready";
+  }
+  $("dot").className = "dot " + (connected && klippyState === "ready" ? "ok" : "bad");
+
+  // Start flow: plugin picked it up, failed, or never answered
+  if (starting) {
+    const st = pt().state;
+    const fresh = !startPrev || (typeof pt().errors === "number" ? pt().errors !== startPrev.errors
+      : (startPrev.state !== "error" || startPrev.message !== pt().message));
+    if (st !== "error") startPrev = null;
+    if (st === "error" && fresh) {
+      starting = false;
+      formError(pt().message || "Printune could not start.");
+      return;
+    }
+    if (st === "soaking" || (isPrinting() && isOurFile()) || Date.now() - startTime > 120000) starting = false;
+  }
+  if (!starting && pt().state === "error" && view === "form" && pt().message && $("formErr").hidden) {
+    $("formErr").textContent = pt().message;
+    $("formErr").hidden = false;
+  }
+
+  const running = isRunning();
+  if (running) view = "home";   // after a session the page lands on HOME, not the old form
+  const showForm = !running && view === "form";
+  show("running", running);
+  show("form", showForm);
+  show("home", !running && !showForm);
+
+  let hdr = "";
+  if (running) hdr = printState() === "paused" ? "Paused" : (pt().state === "soaking" ? "Heat soak" : "Running");
+  else if (isPrinting()) hdr = "Printing";
+  $("hdrState").textContent = hdr;
+
+  if (!running) maybeSyntheticResults();
+  if (running) renderRunning();
+  else if (showForm) renderForm();
+  else renderHome();
+  renderPrompt();
+}
+
+// ---------- event wiring ----------
+function wire() {
+  $("wizardBtn").onclick = () => openForm("wizard");
+  for (const b of document.querySelectorAll("[data-test]")) b.onclick = () => openForm(b.dataset.test);
+  $("backBtn").onclick = () => { saveForm(); view = "home"; render(); };
+  $("startBtn").onclick = startSession;
+  $("soakTg").onclick = () => { form.soak = !form.soak; renderForm(); };
+  for (const id of ["nameIn", "brandIn"]) {
+    $(id).addEventListener("input", (e) => {
+      const v = cleanName(e.target.value);
+      if (v !== e.target.value) e.target.value = v;
+    });
+  }
+  $("nameIn").addEventListener("blur", (e) => {
+    if (!e.target.value.trim()) e.target.value = form.type + " Printune";
+  });
+
+  for (const b of document.querySelectorAll("[data-z]")) {
+    b.onclick = () => runGcode("SET_GCODE_OFFSET Z_ADJUST=" + safeNum(b.dataset.z, 3) + " MOVE=1").catch(() => {});
+  }
+  $("soakSkipBtn").onclick = () => runGcode("_PRINTUNE_SOAK_SKIP").catch(() => {});
+  $("cancelBtn").onclick = async () => {
+    if (!(await ask("Cancel the tuning session? The print stops and the printer's settings are put back.", "Cancel print", true))) return;
+    starting = false;
+    try { await runGcode("_PRINTUNE_ABORT", true); } catch (e) { /* older plugin */ }
+    try { await runGcode("CANCEL_PRINT", true); } catch (e) { /* maybe nothing was printing */ }
+    runGcode("_PRINTUNE_RESET").catch(() => {});
+  };
+  $("doneBtn").onclick = () => {
+    resultsDismissed = printFile();
+    store("printune.dismissed", resultsDismissed);
+    runGcode("RESPOND TYPE=command MSG=action:prompt_end").catch(() => {});
+    prompt = null;
+    promptSeq++;
+    view = "home";
+    render();
+  };
+
+  // Hands-on tools
+  $("heatBtn").onclick = () => runGcode("M104 S" + steppers.heat.value).then(() => toast("Heating to " + steppers.heat.value + " °C", true)).catch(() => {});
+  $("extrudeBtn").onclick = () => {
+    logTarget = "extLog";
+    runGcode("_PRINTUNE_EXTRUDE_TEST").catch(() => {});
+  };
+  $("calcBtn").onclick = () => {
+    const v = safeNum($("leftIn").value, 2);
+    if (v === null || Number(v) < 0 || Number(v) > 120) { toast("Enter how many mm are left to the 120 mm mark (0-120)."); return; }
+    logTarget = "extLog";
+    runGcode("_PRINTUNE_EXTRUDE_RESULT LEFT=" + v).catch(() => {});
+  };
+  $("flowBtn").onclick = () => {
+    logTarget = "flowLog";
+    runGcode("_PRINTUNE_FLOW_TEST FLOW=" + steppers.flow.value).catch(() => {});
+  };
+  $("nozzleOffBtn").onclick = () => runGcode("M104 S0").then(() => toast("Nozzle heater off", true)).catch(() => {});
+}
+
+function init() {
+  makeStepper("tmin", {
+    label: "lowest nozzle temperature", step: 5, min: 150, max: 350, value: 200, unit: "°",
+    onChange: (v) => { if (steppers.tmax && steppers.tmax.value < v) steppers.tmax.set(v); },
+  });
+  makeStepper("tmax", {
+    label: "highest nozzle temperature", step: 5, min: 150, max: 350, value: 230, unit: "°",
+    onChange: (v) => { if (steppers.tmin && steppers.tmin.value > v) steppers.tmin.set(v); },
+  });
+  makeStepper("bed", { label: "bed temperature", step: 5, min: 0, max: 130, value: 60, unit: "°" });
+  makeStepper("heat", {
+    label: "nozzle temperature", step: 5, min: 150, max: 350, value: 210, unit: "°",
+    onChange: (v) => { if ($("heatBtn")) $("heatBtn").textContent = "Heat nozzle to " + v + " °C"; },
+  });
+  // Remember when the user picked a heat value so status updates do not overwrite it
+  for (const b of document.querySelectorAll('[data-stepper="heat"] button')) {
+    b.addEventListener("click", () => { steppers.heat.touched = true; });
+  }
+  makeStepper("flow", { label: "volumetric flow", step: 1, min: 1, max: 80, value: 10, unit: "" });
+  buildTestToggles();
+  const last = store("printune.lastType");
+  if (last && TYPES.includes(last)) form.type = last;
+  wire();
+  render();
+  connect();
+}
+
+init();
+</script>
+</body>
+</html>

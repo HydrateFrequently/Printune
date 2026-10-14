@@ -1,4 +1,4 @@
-"""Rough top-view sanity plot of an ECAL session: toolpaths by test, object boxes, print order."""
+"""Rough top-view sanity plot of an Printune session: toolpaths by test, object boxes, print order."""
 import re, sys
 import numpy as np
 import matplotlib
@@ -37,7 +37,7 @@ for i, (name, pts) in enumerate(defs):
         ax.add_patch(Circle(((x0 + x1) / 2, (y0 + y1) / 2), R + (x1 - x0) / 2, fill=False, lw=0.6, ec="#B279A2", ls=":"))
 ax.set_xlim(-5, 380); ax.set_ylim(-5, 393); ax.set_aspect("equal")
 ax.set_xlabel("X (mm)  - bed front is at the bottom"); ax.set_ylabel("Y (mm)")
-ax.set_title("ROUGH layout check - ECAL session, top view (assumed 375 x 388 bed)\n"
+ax.set_title("ROUGH layout check - Printune session, top view (assumed 375 x 388 bed)\n"
              "numbers = print order; dotted circles = %d mm toolhead clearance around the towers" % R, fontsize=10)
 from matplotlib.lines import Line2D
 ax.legend([Line2D([0], [0], color=c, lw=3) for c in list(col.values())[:-1]],

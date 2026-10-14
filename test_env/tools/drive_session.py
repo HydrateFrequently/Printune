@@ -10,8 +10,11 @@ Stdlib only. Talks to Moonraker over HTTP (through Mainsail's port, 8080, by def
 Usage:
   drive_session.py session.gcode [--host 127.0.0.1:8080]
       [--pick 'TITLE_REGEX=LABEL_SUBSTRING' ...] [--log run.jsonl]
+  drive_session.py --script PRINTUNE --pick 'Printune$=Tuning Wizard' ...
+      (start with a command instead of a file, e.g. the Printune menu)
 
 Without a matching --pick rule the middle regular button is pressed.
+LABEL_SUBSTRING "-" presses nothing (wait, e.g. for a heat soak to end by itself).
 """
 
 import argparse
@@ -108,7 +111,8 @@ def parse_button(rest):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("gcode")
+    ap.add_argument("gcode", nargs="?")
+    ap.add_argument("--script", help="start by sending this G-code instead of a file")
     ap.add_argument("--host", default="127.0.0.1:8080")
     ap.add_argument("--pick", action="append", default=[])
     ap.add_argument("--log", default=None)
@@ -119,7 +123,9 @@ def main():
         k, _, v = p.rpartition("=")
         rules.append((re.compile(k, re.I), v))
     mr = Moonraker(a.host)
-    log = open(a.log or os.path.splitext(a.gcode)[0] + ".run.jsonl", "w")
+    if not a.gcode and not a.script:
+        ap.error("give a G-code file or --script")
+    log = open(a.log or (os.path.splitext(a.gcode)[0] if a.gcode else "script") + ".run.jsonl", "w")
 
     def emit(kind, **kw):
         kw.update(kind=kind, t=round(time.time() - t0, 1))
@@ -131,10 +137,14 @@ def main():
     t0 = time.time()
     store = mr.get("/server/gcode_store", count=1000)["gcode_store"]
     last_t = store[-1]["time"] if store else 0.0
-    mr.upload(a.gcode)
-    fname = os.path.basename(a.gcode)
-    mr.post("/printer/print/start?" + urllib.parse.urlencode({"filename": fname}))
-    emit("start", file=fname)
+    if a.script:
+        mr.gcode(a.script)
+        emit("start", script=a.script)
+    else:
+        mr.upload(a.gcode)
+        fname = os.path.basename(a.gcode)
+        mr.post("/printer/print/start?" + urllib.parse.urlencode({"filename": fname}))
+        emit("start", file=fname)
     prompt = None
     errors = []
     done_at = None
@@ -173,17 +183,21 @@ def main():
                 prompt = None
                 allb = p["buttons"] + p["footer"]
                 choice = None
+                wait = False
                 for rx, want in rules:
                     if rx.search(p["title"] + " " + " ".join(p["text"])):
+                        if want == "-":
+                            wait = True
+                            break
                         for b in allb:
                             if want.lower() in b["label"].lower():
                                 choice = b
                                 break
                         if choice:
                             break
-                if choice is None and p["buttons"]:
+                if choice is None and p["buttons"] and not wait:
                     choice = p["buttons"][len(p["buttons"]) // 2]
-                if choice is None and allb:
+                if choice is None and allb and not wait:
                     choice = allb[0]
                 st = mr.state()
                 emit(

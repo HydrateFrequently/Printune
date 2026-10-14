@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline checks for an ECAL session G-code.
+"""Offline checks for an Printune session G-code.
 
 Simulates the moves (G90 XY/Z, M83 E) and reports:
   * moves outside the bed, extrusion widths per object family

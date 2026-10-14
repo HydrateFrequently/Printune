@@ -1,43 +1,41 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 r"""
-ECAL - Ellis' tuning guide as ONE heat-soaked print session.
+Printune test-print generator: one heat-soaked session with every tuning test.
 
-Generates a single Klipper/Kalico G-code file that runs these tests from
-Andrew Ellis' Print Tuning Guide, in the guide's order, on one bed:
+Generates a single Kalico/Klipper G-code file that prints these tests in order
+on one bed, each depending on the values picked before it:
 
   1. First layer squish  - 25x25 mm patches scattered over the bed (live babystep)
-  2. Pressure advance    - Ellis' pattern method (+ optional fine pass)
-  3. Extrusion multiplier- 30x30x3 mm cubes (+ optional 0.5 % fine pass)
-  4. Retraction          - 3 towers at 3 temperatures, printed one at a time
+  2. Pressure advance    - a row of frames, one per PA value (+ optional fine pass)
+  3. Flow (extrusion multiplier) - 30x30x3 mm cubes (+ optional 0.5 % fine pass)
+  4. Retraction          - towers at several temperatures, printed one at a time
 
-Between tests the printer pauses and Mainsail/Fluidd shows a prompt with one
-button per tested value. The picked value is applied to every later test
-(PA via SET_PRESSURE_ADVANCE, EM via M221, retraction via SET_RETRACTION),
-so the order and dependencies of the guide are kept while the chamber stays
-hot. Needs ellis_calibration.cfg included in printer.cfg.
+Between tests the printer pauses and the Printune page (or Mainsail/Fluidd)
+shows one button per tested value. The picked value is applied to every later
+test (PA via SET_PRESSURE_ADVANCE, flow via M221, retraction via
+SET_RETRACTION) while the chamber stays hot. Needs printune.cfg included in
+printer.cfg.
 
 Usage
+  On the printer: the Printune page / PRINTUNE menu runs this for you.
+
   OrcaSlicer post-processing script (Process > Others > Post-processing scripts):
-      /usr/bin/python3 /path/to/ecal.py;
-      "C:\Path\To\python.exe" "C:\path\to\ecal.py";        (Windows)
-  then add ECAL.stl to an empty plate and slice. Every setting (speeds, accels,
+      /usr/bin/python3 /path/to/printune_gen.py;
+      "C:\Path\To\python.exe" "C:\path\to\printune_gen.py";        (Windows)
+  then add Printune.stl to an empty plate and slice. Every setting (speeds, accels,
   widths, temps, retraction, PA, flow ratio, bed size, start/end G-code) is
-  taken from the profiles used for that slice. Without an object named ECAL...
+  taken from the profiles used for that slice. Without an object named Printune...
   on the plate the script does nothing.
 
   Stand-alone, from an Orca G-code you already sliced (any object):
-      python3 ecal.py --from path/to/sliced.gcode -o ecal_session.gcode
+      python3 printune_gen.py --from path/to/sliced.gcode -o printune_session.gcode
 
-  Stand-alone with built-in defaults (edit START_GCODE/END_GCODE first):
-      python3 ecal.py -o ecal_session.gcode
+  Stand-alone with built-in defaults:
+      python3 printune_gen.py -o printune_session.gcode
 
-Options can also be written into the ECAL object's name in Orca, e.g.
-  "ECAL pa=0-0.08/0.005 em=0.92-1.00/0.02 ret=0-1/0.1 temps=260,250,240 skip=patches"
-
-The PA pattern is a port of Andrew Ellis' Pressure_Linear_Advance_Tool
-(Copyright (C) 2019 Sineos, (C) 2022 AndrewEllis93, GPL-3.0), which is why
-this file is GPL-3.0 too.
+Options can also be written into the Printune object's name in Orca, e.g.
+  "Printune pa=0-0.08_0.005 em=0.92-1.00_0.02 ret=0-1_0.1 temps=260,250,240 skip=patches"
 """
 
 import argparse
@@ -47,8 +45,8 @@ import re
 import shlex
 import sys
 
-VERSION = 5            # must match variable_version in ellis_calibration.cfg
-MARKER = "ECAL"
+VERSION = 5            # must match variable_version in printune.cfg
+MARKER = "PRINTUNE"
 
 # --------------------------------------------------------------------------
 # Defaults. Orca key names so a config dump can override them 1:1.
@@ -110,6 +108,38 @@ DEFAULTS = {
     "gcode_flavor": "klipper",
 }
 
+# Filament types for the on-printer wizard: starting points, not tuned values.
+# t = nozzle range to test (°C), bed (°C), fan (%), vol = max volumetric speed (mm3/s),
+# soak = wants a heat-soaked enclosure, parent = Orca system preset the result inherits.
+FILAMENTS = {
+    "PLA":  dict(t=(200, 220), bed=60,  fan=100, vol=15, soak=0, parent="Generic PLA @System"),
+    "PETG": dict(t=(230, 250), bed=80,  fan=40,  vol=12, soak=0, parent="Generic PETG @System"),
+    "ABS":  dict(t=(240, 260), bed=100, fan=20,  vol=20, soak=1, parent="Generic ABS @System"),
+    "ASA":  dict(t=(250, 270), bed=100, fan=20,  vol=20, soak=1, parent="Generic ASA @System"),
+    "PC":   dict(t=(260, 280), bed=110, fan=0,   vol=15, soak=1, parent="Generic PC @System"),
+    "PA":   dict(t=(250, 270), bed=80,  fan=0,   vol=12, soak=1, parent="Generic PA @System"),
+    "TPU":  dict(t=(220, 240), bed=50,  fan=60,  vol=4,  soak=0, parent="Generic TPU @System"),
+}
+
+
+def tower_temps(tmin, tmax):
+    """Tower temperatures spread over the range, hottest first, at most 4 towers."""
+    tmin, tmax = int(round(tmin)), int(round(tmax))
+    if tmax < tmin:
+        tmin, tmax = tmax, tmin
+    span = tmax - tmin
+    if span == 0:
+        return [tmax]
+    n = min(4, span // 10 + 1) if span >= 10 else 2
+    temps = [tmax - span * i / (n - 1) for i in range(n)]
+    return [int(t) if i in (0, n - 1) else int(5 * round(t / 5.0)) for i, t in enumerate(temps)]
+
+
+def mid_temp(tmin, tmax):
+    """Temperature for the tests before the towers: the middle of the range, to 5 °C."""
+    return int(5 * round((tmin + tmax) / 10.0))
+
+
 # Stand-alone start/end G-code (Orca mode uses the slice's own).
 START_GCODE = "PRINT_START BED=100 HOTEND=250 CHAMBER=0"
 END_GCODE = "PRINT_END"
@@ -118,18 +148,18 @@ END_GCODE = "PRINT_END"
 OPTIONS = {
     "skip": "",                 # comma list of: patches, pa, em, ret
     "patches_extra": 4,         # optional 2nd round of patches (0 = none)
-    "pa": "0-0.08/0.005",       # Ellis tool default for direct drive
+    "pa": "0-0.08/0.005",       # direct drive range
     "pa_fine": "0.005/0.001",   # +-range/step around the pick, 0 = no fine pass
     "em": "",                   # "" = profile flow ratio -4..+4 % in 2 % steps
     "em_fine": "0.01/0.005",    # +-range/step around the pick, 0 = no fine pass
-    "em_infill": 30,            # Ellis: 30 %+ sparse infill
-    "em_size": 30.0,            # Ellis: 30x30x3 mm cubes
+    "em_infill": 30,            # sparse infill under the top surface
+    "em_size": 30.0,            # 30x30x3 mm cubes
     "em_height": 3.0,
-    "ret": "0-1.0/0.1",         # Ellis: direct drive 0.1 mm steps, max 1 mm
-    "ret_speed": 30,            # Ellis: start at 30 mm/s retract and unretract
-    "temps": "",                # "" = nozzle temp +10, 0, -10 (Ellis 3x10 deg)
-    "ret_fan": 0,               # 0 = max(fan_max_speed, 80) (Ellis 80-100 %)
-    "em_fan": 0,                # 0 = fan_max_speed (Ellis: moderate to high)
+    "ret": "0-1.0/0.1",         # direct drive: 0.1 mm steps, max 1 mm
+    "ret_speed": 30,            # retract and unretract speed
+    "temps": "",                # "" = nozzle temp +10, 0, -10
+    "ret_fan": 0,               # 0 = max(fan_max_speed, 80)
+    "em_fan": 0,                # 0 = fan_max_speed
     "pa_fan": 0,                # 0 = fan_max_speed
     "clearance": 0,             # toolhead radius for the collision check, 0 = Orca extruder_clearance_radius
     "low_ok": 1.2,              # objects lower than this may sit under the toolhead
@@ -157,7 +187,7 @@ class Settings:
         self.opt.update(opts)
         c = self.cfg
         if "klipper" not in c.get("gcode_flavor", "klipper").lower():
-            raise SystemExit("ECAL: G-code flavor must be Klipper (got %s)" % c.get("gcode_flavor"))
+            raise SystemExit("Printune: G-code flavor must be Klipper (got %s)" % c.get("gcode_flavor"))
 
         pts = [tuple(map(float, p.split("x"))) for p in c["printable_area"].split(",")]
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
@@ -174,7 +204,7 @@ class Settings:
         self.w_inner = self._width("inner_wall_line_width", lw)
         self.w_solid = self._width("internal_solid_infill_line_width", lw)
         self.w_sparse = self._width("sparse_infill_line_width", lw)
-        self.w_top = self.nozzle  # Ellis EM method: top layer line width 100 %
+        self.w_top = self.nozzle  # flow test: top layer line width 100 %
 
         self.v_first = _num(c["initial_layer_speed"])
         self.v_first_infill = _num(c["initial_layer_infill_speed"])
@@ -279,7 +309,7 @@ class Writer:
         self.retracted = False
         self.hopped = False
         self.accel = None
-        self.ret_macro = False      # use _ECAL_R/_ECAL_U (retraction test without fw retraction)
+        self.ret_macro = False      # use _PRINTUNE_R/_PRINTUNE_U (retraction test without fw retraction)
         self.no_retract = False     # ring 1 of the retraction test (0 mm)
         self.e_total = 0.0
         self.t_total = 0.0          # rough print time, s (moves only, no heating or pauses)
@@ -315,7 +345,7 @@ class Writer:
         if s.fw_retract:
             self.g("G10")
         elif self.ret_macro:
-            self.g("_ECAL_R")
+            self.g("_PRINTUNE_R")
         else:
             self.g("G1 E-%.4f F%d" % (s.ret_len, s.ret_speed * 60))
         self.retracted = True
@@ -327,7 +357,7 @@ class Writer:
         if s.fw_retract:
             self.g("G11")
         elif self.ret_macro:
-            self.g("_ECAL_U")
+            self.g("_PRINTUNE_U")
         else:
             self.g("G1 E%.4f F%d" % (s.ret_len, s.unret_speed * 60))
         self.retracted = False
@@ -461,94 +491,208 @@ def circle(cx, cy, r, n=None, start_deg=90.0):
              cy + r * math.sin(math.radians(start_deg + 360.0 * i / n))) for i in range(n)]
 
 
-# Ellis' glyphs (from the PA tool), plus a minus sign. Native frame: text runs +Y,
-# digit "up" points -X (readable from the printer's right-hand side).
-GLYPHS = {
-    '1': ['bl', 'right', 'right'],
-    '2': ['bl', 'up', 'right', 'down', 'right', 'up'],
-    '3': ['bl', 'up', 'right', 'down', 'mup', 'right', 'down'],
-    '4': ['ul', 'right', 'right', 'mleft', 'down', 'left'],
-    '5': ['ul', 'down', 'right', 'up', 'right', 'down'],
-    '6': ['ul', 'down', 'right', 'right', 'up', 'left', 'down'],
-    '7': ['bl', 'up', 'right', 'right'],
-    '8': ['bl', 'right', 'right', 'up', 'left', 'left', 'down', 'mright', 'up'],
-    '9': ['br', 'up', 'left', 'left', 'down', 'right', 'up'],
-    '0': ['bl', 'right', 'right', 'up', 'left', 'left', 'down'],
-    '.': ['br', 'dot'],
-    '-': ['ml', 'up'],
+# ---- Digit font and pressure advance test (Printune's own design) ----
+
+TEXT_H = 4.0          # text box height, mm (glyph body is TEXT_H - 2*_PAD)
+_PAD = 0.3            # margin inside the text box so a ~0.45 mm stroke stays inside it
+_GAP = 0.7            # gap between characters, mm
+
+# width of each glyph body (mm) and its strokes in a unit cell, (0,0) = bottom left
+_FONT = {
+    "0": (2.4, [[(0.3, 0), (0.7, 0), (1, 0.15), (1, 0.85), (0.7, 1), (0.3, 1),
+                 (0, 0.85), (0, 0.15), (0.3, 0), (0.7, 0)]]),
+    "1": (1.8, [[(0, 0.75), (0.55, 1), (0.55, 0)], [(0, 0), (1, 0)]]),
+    "2": (2.4, [[(0, 0.8), (0.25, 1), (0.75, 1), (1, 0.8), (1, 0.6), (0, 0), (1, 0)]]),
+    "3": (2.4, [[(0, 0.85), (0.25, 1), (0.75, 1), (1, 0.85), (1, 0.65), (0.7, 0.52),
+                 (1, 0.38), (1, 0.15), (0.75, 0), (0.25, 0), (0, 0.15)],
+                [(0.3, 0.52), (0.7, 0.52)]]),
+    "4": (2.4, [[(0.75, 0), (0.75, 1), (0, 0.32), (1, 0.32)]]),
+    "5": (2.4, [[(1, 1), (0.05, 1), (0, 0.55), (0.7, 0.6), (1, 0.42), (1, 0.15),
+                 (0.75, 0), (0.25, 0), (0, 0.15)]]),
+    "6": (2.4, [[(0.95, 0.88), (0.75, 1), (0.25, 1), (0, 0.85), (0, 0.15), (0.25, 0),
+                 (0.75, 0), (1, 0.15), (1, 0.42), (0.75, 0.57), (0.25, 0.57), (0, 0.42)]]),
+    "7": (2.4, [[(0, 1), (1, 1), (0.3, 0)]]),
+    "8": (2.4, [[(0.3, 0.55), (0.08, 0.7), (0.08, 0.86), (0.3, 1), (0.7, 1), (0.92, 0.86),
+                 (0.92, 0.7), (0.7, 0.55), (0.3, 0.55), (0, 0.4), (0, 0.15), (0.25, 0),
+                 (0.75, 0), (1, 0.15), (1, 0.4), (0.7, 0.55)]]),
+    "9": (2.4, [[(0.05, 0.12), (0.25, 0), (0.75, 0), (1, 0.15), (1, 0.85), (0.75, 1),
+                 (0.25, 1), (0, 0.85), (0, 0.58), (0.25, 0.43), (0.75, 0.43), (1, 0.58)]]),
+    ".": (0.7, [[(0, 0), (1, 0)]]),
+    "-": (1.8, [[(0, 0.5), (1, 0.5)]]),
+    "+": (2.2, [[(0, 0.5), (1, 0.5)], [(0.5, 0.22), (0.5, 0.78)]]),
+    " ": (1.2, []),
 }
-SEG = 2.0
-DOT = 0.75
 
 
 def text_len(txt):
-    return sum(1 if ch in "1." else 3 for ch in txt)
+    """Length of the text box along the reading direction, mm."""
+    chars = [c for c in str(txt) if c in _FONT]
+    if not chars:
+        return 0.0
+    return sum(_FONT[c][0] for c in chars) + _GAP * (len(chars) - 1) + 2 * _PAD
+
+
+def _text_strokes(txt):
+    """Polylines in text-box coordinates (u along the text, v up), box = text_len x TEXT_H."""
+    body = TEXT_H - 2 * _PAD
+    u0 = _PAD
+    out = []
+    for c in str(txt):
+        if c not in _FONT:
+            continue
+        gw, strokes = _FONT[c]
+        for st in strokes:
+            out.append([(u0 + x * gw, _PAD + y * body) for x, y in st])
+        u0 += gw + _GAP
+    return out
 
 
 def draw_text(wr, x0, y0, txt, w, h, v, front=False, accel=None):
-    """Ellis' drawNumber. front=True rotates so the text reads from the front of the bed
-    (text runs +X, up is +Y); the text box is then text_len(txt) x 4 mm from (x0, y0)."""
-    def T(dx, dy):
-        if not front:
-            return (x0 + dx, y0 + dy)
-        return (x0 + dy, y0 + 4.0 - dx)
-    cx = cy = 0.0
-    adv = 0.0
-    for ch in txt:
-        for seg in GLYPHS[ch]:
-            if seg == 'bl':
-                cx, cy = 0.0, adv
-                wr.travel(*T(cx, cy))
-            elif seg == 'br':
-                cx, cy = 2 * SEG, adv
-                wr.travel(*T(cx, cy))
-            elif seg == 'ul':
-                cx, cy = 0.0, adv + SEG
-                wr.travel(*T(cx, cy))
-            elif seg == 'ml':
-                cx, cy = SEG, adv
-                wr.travel(*T(cx, cy))
-            elif seg in ('up', 'down', 'right', 'left', 'dot'):
-                d = {'up': (0, SEG), 'down': (0, -SEG), 'right': (SEG, 0),
-                     'left': (-SEG, 0), 'dot': (-DOT, 0)}[seg]
-                cx, cy = cx + d[0], cy + d[1]
-                wr.line(*T(cx, cy), w, h, v, accel, kind="glyph")
-            else:  # mup/mdown/mright/mleft
-                d = {'mup': (0, SEG), 'mdown': (0, -SEG), 'mright': (SEG, 0), 'mleft': (-SEG, 0)}[seg]
-                cx, cy = cx + d[0], cy + d[1]
-                wr.travel(*T(cx, cy))
-        adv += 1 if ch in "1." else 3
+    """Draw txt with the stroke font.  front=True: text runs +X, up is +Y, box is
+    text_len(txt) x TEXT_H from (x0, y0).  front=False: text runs +Y, glyph up is -X,
+    box is TEXT_H x text_len(txt) from (x0, y0) (reads from the right side of the bed)."""
+    if front:
+        T = lambda u, q: (x0 + u, y0 + q)
+    else:
+        T = lambda u, q: (x0 + TEXT_H - q, y0 + u)
+    for st in _text_strokes(txt):
+        pts = [T(u, q) for u, q in st]
+        wr.travel(*pts[0])
+        for p in pts[1:]:
+            wr.line(p[0], p[1], w, h, v, accel, "ext")
 
 
-def ellis_draw_box(wr, s, min_x, min_y, size_x, size_y, w, h, v, perims, fill):
-    """Port of Ellis' drawBox (perimeters stepping inwards + optional 45 deg fill)."""
-    sp = w - h * (1 - math.pi / 4)
-    s45 = math.sin(math.radians(45))
-    max_p = min(math.floor(size_x * s45 / (sp / s45)), math.floor(size_y * s45 / (sp / s45)))
-    perims = min(perims, max_p)
-    x, y = min_x, min_y
-    max_x, max_y = min_x + size_x, min_y + size_y
-    wr.travel(x, y)
-    for i in range(perims):
-        if i:
-            x += sp
-            y += sp
-            wr.travel(x, y)
-        y += size_y - (i * sp) * 2
-        wr.line(x, y, w, h, v, accel=s.a_first, kind="anchor")
-        x += size_x - (i * sp) * 2
-        wr.line(x, y, w, h, v, accel=s.a_first, kind="anchor")
-        y -= size_y - (i * sp) * 2
-        wr.line(x, y, w, h, v, accel=s.a_first, kind="anchor")
-        x -= size_x - (i * sp) * 2
-        wr.line(x, y, w, h, v, accel=s.a_first, kind="anchor")
-    if fill:
-        enc = 1.0 / 3
-        inset = sp * (perims - 1) + w * (1 - enc)
-        x0, x1, y0, y1 = min_x + inset, max_x - inset, min_y + inset, max_y - inset
-        for a, b in hatch(x0, y0, x1, y1, sp, 45):
-            wr.travel(*a)
-            wr.line(*b, w, h, v, accel=s.a_first, kind="anchor")
+# ---------------------------------------------------------------------------
+# Speed-step frame PA test
+# ---------------------------------------------------------------------------
+def _pitch(w, h):
+    """Centre distance of adjacent extrusions (rounded-rectangle bead model)."""
+    return w - h * (1 - math.pi / 4)
+
+
+class PATest:
+    FRAME_W = 5.0        # frame outer size across X, mm
+    FRAME_L = 24.0       # frame outer size along Y (the long, speed-stepped edges), mm
+    GAP = 2.5            # clear space between frames, mm
+    WALLS = 2
+    LAYERS = 4           # frame layers (first one on the bed)
+    SLOW_FRAC = 0.2      # slow part at each end of a long edge
+    LABEL_MARGIN = 1.0   # strip margin around the labels, mm
+    LINE_RATIO = 1.125
+
+    def __init__(self, s, values, labels, cx, cy, setter):
+        self.s = s
+        self.values = values
+        self.labels = labels
+        self.setter = setter          # fn(i) -> G-code line that sets PA for frame i
+        n = self.n = len(values)
+        self.lw = s.nozzle * self.LINE_RATIO
+        self.pitch = self.FRAME_W + self.GAP
+        self.osx = n * self.FRAME_W + (n - 1) * self.GAP
+        lab_len = max([text_len(t) for t in labels] + [0.0])
+        self.strip_d = lab_len + 2 * self.LABEL_MARGIN
+        self.osy = self.strip_d + self.FRAME_L - 0.5 * self.lw   # frames overlap the strip by half a line
+        self.sx = cx - self.osx / 2
+        self.sy = cy - self.osy / 2
+        self.box = (self.sx - 1, self.sy - 1, self.sx + self.osx + 1, self.sy + self.osy + 1)
+        self.height = s.h1 + (self.LAYERS - 1) * s.h
+
+    # -- geometry -----------------------------------------------------------
+    def frame_rect(self, i):
+        x0 = self.sx + i * self.pitch
+        y0 = self.sy + self.strip_d - 0.5 * self.lw
+        return x0, y0, x0 + self.FRAME_W, y0 + self.FRAME_L
+
+    def _loops(self, i, w, h):
+        """Wall centre-line rectangles, innermost first (outer wall printed last)."""
+        x0, y0, x1, y1 = self.frame_rect(i)
+        p = _pitch(w, h)
+        loops = []
+        for k in range(self.WALLS):
+            d = w / 2 + k * p
+            loops.append((x0 + d, y0 + d, x1 - d, y1 - d))
+        return loops[::-1]
+
+    # -- printing -----------------------------------------------------------
+    def _frame_layer(self, wr, i, w, h, v_slow, v_fast, acc, stepped):
+        for (x0, y0, x1, y1) in self._loops(i, w, h):
+            xm = (x0 + x1) / 2
+            # start mid front edge, run counter-clockwise; the seam stays on a short edge
+            wr.travel(xm, y0)
+            wr.line(x1, y0, w, h, v_slow, acc)
+            self._edge(wr, x1, y0, x1, y1, w, h, v_slow, v_fast, acc, stepped)
+            wr.line(x0, y1, w, h, v_slow, acc)
+            self._edge(wr, x0, y1, x0, y0, w, h, v_slow, v_fast, acc, stepped)
+            wr.line(xm - 0.15 * w, y0, w, h, v_slow, acc)   # small gap closes the seam without a blob
+
+    def _edge(self, wr, xa, ya, xb, yb, w, h, v_slow, v_fast, acc, stepped):
+        if not stepped:
+            wr.line(xb, yb, w, h, v_slow, acc)
+            return
+        f = self.SLOW_FRAC
+        for t, v in ((f, v_slow), (1 - f, v_fast), (1.0, v_slow)):
+            wr.line(xa + (xb - xa) * t, ya + (yb - ya) * t, w, h, v, acc)
+
+    def _strip(self, wr):
+        s = self.s
+        w, h = s.w_first, s.h1
+        x0, y0 = self.sx + w / 2, self.sy + w / 2
+        x1, y1 = self.sx + self.osx - w / 2, self.sy + self.strip_d - w / 2
+        wr.travel(x0, y0)
+        for p in ((x1, y0), (x1, y1), (x0, y1), (x0, y0)):
+            wr.line(p[0], p[1], w, h, s.v_first, s.a_first)
+        # serpentine fill along X inside the loop
+        p = _pitch(w, h)
+        y = y0 + p
+        left = True
+        xa, xb = x0 + p, x1 - p
+        wr.travel(xa, y)
+        while y <= y1 - p + 1e-6:
+            xe = xb if left else xa
+            wr.line(xe, y, w, h, s.v_first, s.a_first)
+            ny = y + p
+            if ny <= y1 - p + 1e-6:
+                wr.line(xe, ny, w, h, s.v_first, s.a_first)
+            y, left = ny, not left
+
+    def _labels(self, wr):
+        s = self.s
+        for i in range(self.n):
+            fx0, _, fx1, _ = self.frame_rect(i)
+            lx = (fx0 + fx1) / 2 - TEXT_H / 2
+            ly = self.sy + self.LABEL_MARGIN
+            draw_text(wr, lx, ly, self.labels[i], self.lw, s.h, s.v_first, front=False, accel=s.a_first)
+
+    def draw(self, wr, fan_pct):
+        s = self.s
+        v_fast = s.v_outer
+        v_slow = max(5.0, min(s.v_first, 0.3 * v_fast))
+        wr.fan(0)
+        wr.g(self.setter(0))
+        for L in range(self.LAYERS):
+            z = s.h1 + L * s.h
+            h = s.h1 if L == 0 else s.h
+            wr.z_to(z)
+            if L == 0:
+                self._strip(wr)
+            if L == 1:
+                wr.fan(fan_pct)
+                wr.g(self.setter(0))
+                self._labels(wr)
+            order = range(self.n) if L % 2 == 0 else range(self.n - 1, -1, -1)
+            for i in order:
+                wr.g(self.setter(i))
+                if L == 0:
+                    self._frame_layer(wr, i, s.w_first, h, s.v_first, s.v_first, s.a_first, False)
+                else:
+                    self._frame_layer(wr, i, self.lw, h, v_slow, v_fast, s.a_outer, True)
+        wr.max_h = max(wr.max_h, self.height)
+
+
+# ---------------------------------------------------------------------------
+# Self-test
+# ---------------------------------------------------------------------------
+
 
 
 # --------------------------------------------------------------------------
@@ -635,100 +779,7 @@ def patch_draw(wr, s, o):
                sp, 45, s.ov_solid, "patch")
 
 
-# ---- 2. Ellis PA pattern ---------------------------------------------------
-class PAPattern:
-    """Ellis pattern method (pressure_linear_advance.js genGcode, anchor frame + numbering)."""
-    WALLS, SIDE, SPACE, ANGLE, LAYERS, PERIMS = 3, 30.0, 2.0, 90.0, 4, 4
-    LINE_RATIO, ANCHOR_RATIO = 1.125, 1.40
-    PAD_H = PAD_V = 1.0
-    ENC = 1.0 / 3
-
-    def __init__(self, s, values, labels, cx, cy, setter):
-        self.s = s
-        self.values = values      # PA per pattern (abs) or offsets (rel)
-        self.labels = labels      # text per pattern (every other is printed)
-        self.setter = setter      # fn(i) -> gcode line that sets PA for pattern i
-        n = self.n = len(values)
-        self.lw = s.nozzle * self.LINE_RATIO
-        self.lwa = s.nozzle * self.ANCHOR_RATIO
-        self.ls = self.lw - s.h * (1 - math.pi / 4)
-        self.lsa = self.lwa - s.h1 * (1 - math.pi / 4)
-        half = math.radians(self.ANGLE) / 2
-        self.lsang = self.ls / math.sin(half)
-        self.osx = round(n * ((self.WALLS - 1) * self.lsang) + (n - 1) * (self.SPACE + self.lw)
-                         + math.cos(half) * self.SIDE, 4) + self.lsa * self.PERIMS
-        self.maxnum = max(text_len(labels[i]) for i in range(0, n, 2))
-        self.osy = round(2 * math.sin(half) * self.SIDE, 4) + self.maxnum + self.PAD_V * 2 + self.lwa
-        self.frame_y = math.sin(half) * self.SIDE * 2
-        glyph_start = cx - self.osx / 2 + ((self.WALLS - 1) / 2 * self.lsang - 2)
-        shift = cx - self.osx / 2 - glyph_start + self.PAD_H
-        self.shift = shift + self.lwa / 2 if shift > 0 else 0.0
-        self.sx = cx - (self.osx + self.shift) / 2
-        self.sy = cy - self.osy / 2
-        self.cx, self.cy = cx, cy
-        glyph_end = (cx - self.osx / 2 + (n - 1) * (self.SPACE + self.lw)
-                     + (n - 1) * ((self.WALLS - 1) * self.lsang) + 4)
-        self.tab_max_x = glyph_end + self.PAD_H + self.lwa / 2
-        self.box = (self.sx - 1, self.sy - 1, self.sx + self.osx + self.shift + 1, self.sy + self.osy + 1)
-        self.height = s.h1 + (self.LAYERS - 1) * s.h
-
-    def draw(self, wr, fan_pct):
-        s = self.s
-        half = math.radians(self.ANGLE) / 2
-        v_first = s.v_first
-        wr.fan(0)
-        wr.g(self.setter(0))
-        wr.z_to(s.h1)
-        # anchor frame + numbering tab (layer 1)
-        ellis_draw_box(wr, s, self.sx, self.sy, self.osx + self.shift, self.frame_y,
-                       self.lwa, s.h1, v_first, self.PERIMS, False)
-        tab_y = self.sy + self.frame_y + self.lsa
-        tab_h = self.maxnum + self.lsa + self.PAD_V * 2
-        ellis_draw_box(wr, s, self.sx, tab_y, self.tab_max_x - self.sx, tab_h,
-                       self.lwa, s.h1, v_first, self.PERIMS, True)
-        for i in range(self.LAYERS):
-            h = s.h1 if i == 0 else s.h
-            z = s.h1 + i * s.h
-            if i == 1:
-                wr.fan(fan_pct)
-            wr.z_to(z)
-            if i == 1:  # numbering on layer 2
-                wr.g(self.setter(0))
-                for j in range(0, self.n, 2):
-                    gx = self.sx + j * (self.SPACE + self.lw) + j * ((self.WALLS - 1) * self.lsang)
-                    gx += ((self.WALLS - 1) / 2) * self.lsang - 2 + self.shift
-                    draw_text(wr, gx, self.sy + self.frame_y + self.PAD_V + self.lw,
-                              self.labels[j], self.lw, s.h, v_first, accel=s.a_first)
-            tx, ty, side = self.sx + self.shift, self.sy, self.SIDE
-            if i == 0:
-                shrink = ((self.lsa * (self.PERIMS - 1) + self.lwa * (1 - self.ENC)) / math.sin(half))
-                side = self.SIDE - shrink
-                tx += shrink * math.sin(math.radians(90) - half)
-                ty += self.lsa * (self.PERIMS - 1) + self.lwa * (1 - self.ENC)
-            ix, iy = tx, ty
-            wr.travel(tx, ty)
-            v = v_first if i == 0 else s.v_outer
-            acc = s.a_first if i == 0 else s.a_outer
-            for j in range(self.n):
-                wr.g(self.setter(j))
-                for k in range(self.WALLS):
-                    tx += math.cos(half) * side
-                    ty += math.sin(half) * side
-                    wr.line(tx, ty, self.lw, h, v, acc, "pa")
-                    tx -= math.cos(half) * side
-                    ty += math.sin(half) * side
-                    wr.line(tx, ty, self.lw, h, v, acc, "pa")
-                    ty = iy
-                    if k != self.WALLS - 1:
-                        tx += self.lsang
-                        wr.travel(tx, ty)
-                    elif j != self.n - 1:
-                        tx += self.SPACE + self.lw
-                        wr.travel(tx, ty)
-                    elif i != self.LAYERS - 1:
-                        tx = ix
-                        wr.travel(tx, ty)
-        wr.max_h = max(wr.max_h, self.height)
+# ---- 2. PA test: PATest (defined with the font above) --------------------
 
 
 # ---- 3. EM cubes -------------------------------------------------------------
@@ -764,7 +815,7 @@ def em_cube_layer(wr, s, o, li, z, kind, density):
     elif kind == "sparse":
         print_fill(wr, s, x0, y0, x1, y1, edge, s.w_sparse, h, s.v_sparse, s.a_sparse,
                    s.w_sparse / (density / 100.0), ang, s.ov_sparse, "sparse")
-    else:  # top surface: Ellis - 100 % width, monotonic lines, top speed
+    else:  # top surface: 100 % width, monotonic lines, top speed
         print_fill(wr, s, x0, y0, x1, y1, edge, s.w_top, h, s.v_top, s.a_top,
                    spacing(s.w_top, h), ang, s.ov_solid, "top")
 
@@ -773,7 +824,10 @@ def label_tab(wr, s, x0, y0, txt, layer):
     """2-layer label: filled first-layer tab, digits on layer 2. Box = (len+3) x 7 mm."""
     tw, th = text_len(txt) + 3.0, 7.0
     if layer == 0:
-        ellis_draw_box(wr, s, x0, y0, tw, th, s.w_first, s.h1, s.v_first, 2, True)
+        loops, edge = walls_rect(s, x0, y0, x0 + tw, y0 + th, 2, s.h1, True)
+        print_walls(wr, s, loops, s.h1)
+        print_fill(wr, s, x0, y0, x0 + tw, y0 + th, edge, s.w_first, s.h1, s.v_first, s.a_first,
+                   spacing(s.w_first, s.h1), 45, s.ov_solid, "anchor")
     elif layer == 1:
         draw_text(wr, x0 + 1.5, y0 + 1.5, txt, s.nozzle * 1.125, s.h, s.v_first, front=True, accel=s.a_first)
 
@@ -852,7 +906,7 @@ class Session:
                     raise ValueError
                 return v
             except (ValueError, ZeroDivisionError):
-                raise SystemExit("ECAL: can't read %s=%s (use start-end/step, e.g. 0-0.08/0.005, "
+                raise SystemExit("Printune: can't read %s=%s (use start-end/step, e.g. 0-0.08/0.005, "
                                  "or a list, e.g. 260,250,240)" % (key, text))
         self.pa_vals = opt("pa", parse_range)
         self.pa_fine = opt("pa_fine", parse_fine)
@@ -882,7 +936,7 @@ class Session:
         objs = []
         sk = s.skip
 
-        # patches: 3x3 over the whole bed (Ellis: scatter around the bed)
+        # patches: 3x3 over the whole bed
         self.patches, self.patches_b = [], []
         if "patches" not in sk:
             cxs = [bx0 + m + PATCH / 2, X(0.5), bx1 - m - PATCH / 2]
@@ -902,15 +956,15 @@ class Session:
         self.pa_obj = self.pa_fine_obj = None
         if "pa" not in sk:
             labels = [fmt_val(v) for v in self.pa_vals]
-            pat = PAPattern(s, self.pa_vals, labels, col_r, Y(0.315),
+            pat = PATest(s, self.pa_vals, labels, col_r, Y(0.315),
                             lambda j: "SET_PRESSURE_ADVANCE ADVANCE=%s" % fmt_val(self.pa_vals[j]))
             self.pa_obj = Obj("PA_COARSE", self._grow(pat.box, 6), pat.height, "pa")
             self.pa_obj.pat = pat
             objs.append(self.pa_obj)
             if self.pa_fine:
                 lab = [fmt_val(d * 1000, 1) for d in self.pa_fine]
-                patf = PAPattern(s, self.pa_fine, lab, col_r, Y(0.665),
-                                 lambda j: "_ECAL_PA_REL D=%s" % fmt_val(self.pa_fine[j], 5))
+                patf = PATest(s, self.pa_fine, lab, col_r, Y(0.665),
+                                 lambda j: "_PRINTUNE_PA_REL D=%s" % fmt_val(self.pa_fine[j], 5))
                 self.pa_fine_obj = Obj("PA_FINE", self._grow(patf.box, 6), patf.height, "pa_fine")
                 self.pa_fine_obj.pat = patf
                 objs.append(self.pa_fine_obj)
@@ -1012,13 +1066,13 @@ class Session:
         for o in self.objs:
             x0, y0, x1, y1 = o.box
             if x0 < bx0 + 1 or y0 < by0 + 1 or x1 > bx1 - 1 or y1 > by1 - 1:
-                raise SystemExit("ECAL: %s does not fit on the bed (%s)" % (o.name, o.box))
+                raise SystemExit("Printune: %s does not fit on the bed (%s)" % (o.name, o.box))
             if o.height > s.max_z - 5:
-                raise SystemExit("ECAL: %s is taller than the printable height" % o.name)
+                raise SystemExit("Printune: %s is taller than the printable height" % o.name)
         for i, a in enumerate(self.objs):
             for b in self.objs[i + 1:]:
                 if overlap(a.box, b.box, 0.5):
-                    raise SystemExit("ECAL: %s and %s overlap - too many test values for this bed. "
+                    raise SystemExit("Printune: %s and %s overlap - too many test values for this bed. "
                                      "On a 375x388 bed: up to 6 EM cubes, ~30 PA patterns, 3 towers per "
                                      "pass (use fewer values or a coarser step)." % (a.name, b.name))
         # toolhead clearance: while printing an object, nothing taller than low_ok that was
@@ -1030,13 +1084,13 @@ class Session:
                 if p.height <= s.low_ok or p.section == o.section:
                     continue
                 if box_dist(o.box, p.box) < R:
-                    raise SystemExit("ECAL: toolhead (radius %.0f mm) would hit %s while printing %s"
+                    raise SystemExit("Printune: toolhead (radius %.0f mm) would hit %s while printing %s"
                                      % (R, p.name, o.name))
         # objects printed one at a time in the same section (towers)
         for i, o in enumerate(self.towers):
             for p in self.towers[:i]:
                 if box_dist(o.box, p.box) < R:
-                    raise SystemExit("ECAL: towers %s and %s are closer than the clearance radius %.0f mm"
+                    raise SystemExit("Printune: towers %s and %s are closer than the clearance radius %.0f mm"
                                      % (p.name, o.name, R))
         return order
 
@@ -1046,12 +1100,12 @@ class Session:
         wr = Writer(s)
         self.wr = wr
         g = wr.g
-        g("; ===== ECAL session body (generated by ecal.py v%d) =====" % VERSION)
+        g("; ===== Printune session body (generated by printune_gen.py v%d) =====" % VERSION)
         g("G90")
         g("M83")
         g("G92 E0")
         # PA=-1: Orca does not set PA, so keep whatever the printer has now
-        g("_ECAL_BEGIN VERSION=%d PA=%s EM=%.4f FW=%d PFR=%.4f" % (
+        g("_PRINTUNE_BEGIN VERSION=%d PA=%s EM=%.4f FW=%d PFR=%.4f" % (
             VERSION, fmt_val(s.pa_profile, 4) if s.pa_enabled else "-1", s.em_profile,
             1 if s.fw_retract else 0, _num(s.cfg.get("print_flow_ratio", "1")) or 1.0))
         wr.set_accel(s.a_travel)
@@ -1060,9 +1114,9 @@ class Session:
 
         # ---- 1. patches ----
         if self.patches:
-            g("; ----- 1. FIRST LAYER SQUISH (Ellis) -----")
-            g("M117 ECAL 1/4 first layer - babystep now")
-            g("RESPOND MSG=\"ECAL 1/4: first-layer patches. Babystep Z while they print.\"")
+            g("; ----- 1. FIRST LAYER SQUISH -----")
+            g("M117 Printune 1/4 first layer - babystep now")
+            g("RESPOND MSG=\"Printune 1/4: first-layer patches. Babystep Z while they print.\"")
             wr.fan(0)
             first = self.patches[0]
             wr.safe_travel(first.box[0], first.box[1] + 1)
@@ -1070,71 +1124,71 @@ class Session:
             # after the last patch round, heat to the normal print temperature while you judge
             heat = ("M104 S%d" % self.t_print) if self.t_print != self.t_first else None
             if self.patches_b:
-                self._cp(wr, "_ECAL_CP STEP=squish SKIP=%s" % ",".join(o.name for o in self.patches_b))
+                self._cp(wr, "_PRINTUNE_CP STEP=squish SKIP=%s" % ",".join(o.name for o in self.patches_b))
                 self._patch_round(wr, self.patches_b, prime=False)
                 if heat:
                     g(heat)
-                self._cp(wr, "_ECAL_CP STEP=squish2 OBJ=%s" % self.patches_b[0].name)
+                self._cp(wr, "_PRINTUNE_CP STEP=squish2 OBJ=%s" % self.patches_b[0].name)
             else:
                 if heat:
                     g(heat)
-                self._cp(wr, "_ECAL_CP STEP=squish2")
+                self._cp(wr, "_PRINTUNE_CP STEP=squish2")
 
         # ---- 2. PA ----
         if self.pa_obj:
-            g("; ----- 2. PRESSURE ADVANCE, pattern method (Ellis) -----")
-            g("M117 ECAL 2/4 pressure advance")
+            g("; ----- 2. PRESSURE ADVANCE -----")
+            g("M117 Printune 2/4 pressure advance")
             g("M109 S%d" % self.t_print)
             fan = float(s.opt["pa_fan"]) or s.fan_max
             vals = ",".join(fmt_val(v) for v in self.pa_vals)
             self._pa(wr, self.pa_obj, fan)
             skip = "SKIP=PA_FINE" if self.pa_fine_obj else ""
-            self._cp(wr, "_ECAL_CP STEP=pa VALUES=%s %s" % (vals, skip))
-            g("_ECAL_APPLY")
+            self._cp(wr, "_PRINTUNE_CP STEP=pa VALUES=%s %s" % (vals, skip))
+            g("_PRINTUNE_APPLY")
             if self.pa_fine_obj:
                 self._pa(wr, self.pa_fine_obj, fan)
-                self._cp(wr, "_ECAL_CP STEP=pa_fine OBJ=PA_FINE OFFSETS=%s"
+                self._cp(wr, "_PRINTUNE_CP STEP=pa_fine OBJ=PA_FINE OFFSETS=%s"
                          % ",".join(fmt_val(d, 5) for d in self.pa_fine))
-                g("_ECAL_APPLY")
+                g("_PRINTUNE_APPLY")
 
         # ---- 3. EM ----
         if self.em_c:
-            g("; ----- 3. EXTRUSION MULTIPLIER (Ellis) -----")
-            g("M117 ECAL 3/4 extrusion multiplier")
+            g("; ----- 3. FLOW (EXTRUSION MULTIPLIER) -----")
+            g("M117 Printune 3/4 extrusion multiplier")
             g("M109 S%d" % self.t_print)
-            g("_ECAL_APPLY")
+            g("_PRINTUNE_APPLY")
             fan = float(s.opt["em_fan"]) or s.fan_max
             self._em(wr, self.em_c, fan, lambda o: "M221 S%.2f" % (self.em_vals[o.idx] * 100))
             skip = ("SKIP=" + ",".join(o.name for o in self.em_f)) if self.em_f else ""
-            self._cp(wr, "_ECAL_CP STEP=em VALUES=%s %s" % (",".join("%.4f" % v for v in self.em_vals), skip))
-            g("_ECAL_APPLY")
+            self._cp(wr, "_PRINTUNE_CP STEP=em VALUES=%s %s" % (",".join("%.4f" % v for v in self.em_vals), skip))
+            g("_PRINTUNE_APPLY")
             if self.em_f:
-                self._em(wr, self.em_f, fan, lambda o: "_ECAL_EM_REL D=%s" % fmt_val(self.em_fine[o.idx], 5))
-                self._cp(wr, "_ECAL_CP STEP=em_fine OBJ=%s OFFSETS=%s"
+                self._em(wr, self.em_f, fan, lambda o: "_PRINTUNE_EM_REL D=%s" % fmt_val(self.em_fine[o.idx], 5))
+                self._cp(wr, "_PRINTUNE_CP STEP=em_fine OBJ=%s OFFSETS=%s"
                          % (self.em_f[0].name, ",".join(fmt_val(d, 5) for d in self.em_fine)))
-                g("_ECAL_APPLY")
+                g("_PRINTUNE_APPLY")
 
         # ---- 4. retraction ----
         if self.towers:
-            g("; ----- 4. RETRACTION towers (Ellis), one at a time, hottest first -----")
-            g("M117 ECAL 4/4 retraction")
-            # Ellis calls retraction tuning optional; also the moment to brush the nozzle clean
-            self._cp(wr, "_ECAL_CP STEP=ret_ask SKIP=%s" % ",".join(o.name for o in self.towers))
-            g("_ECAL_APPLY")
+            g("; ----- 4. RETRACTION towers, one at a time, hottest first -----")
+            g("M117 Printune 4/4 retraction")
+            # retraction tuning is optional; also the moment to brush the nozzle clean
+            self._cp(wr, "_PRINTUNE_CP STEP=ret_ask SKIP=%s" % ",".join(o.name for o in self.towers))
+            g("_PRINTUNE_APPLY")
             fan = float(s.opt["ret_fan"]) or max(s.fan_max, 80.0)
             wr.ret_macro = not s.fw_retract
             for o in self.towers:
                 self._tower(wr, o, fan)
             wr.ret_macro = False
         self._park(wr)
-        g("_ECAL_END")
+        g("_PRINTUNE_END")
         if self.towers:
-            g("_ECAL_CP STEP=ret ALL=%s TEMPS=%s RINGS=%s" % (",".join(o.name for o in self.towers),
+            g("_PRINTUNE_CP STEP=ret ALL=%s TEMPS=%s RINGS=%s" % (",".join(o.name for o in self.towers),
                                                               ",".join(str(t) for t in self.temps),
                                                               ",".join(fmt_val(v, 3) for v in self.ret_vals)))
         else:
-            g("_ECAL_CP STEP=summary")
-        g("; ===== ECAL session end =====")
+            g("_PRINTUNE_CP STEP=summary")
+        g("; ===== Printune session end =====")
         return wr
 
     def _park(self, wr):
@@ -1200,7 +1254,7 @@ class Session:
         lw_, lh_ = label_size(str(temp))
         lab = (cx - lw_ / 2, cy - bd / 2 - lh_ - 2)
         self._park(wr)
-        wr.g("_ECAL_TEMP OBJ=%s S=%d" % (o.name, temp))
+        wr.g("_PRINTUNE_TEMP OBJ=%s S=%d" % (o.name, temp))
         wr.safe_travel(o.box[0] + 1, o.box[1] + 1)
         obj_start(wr, o)
         wr.fan(0)
@@ -1234,7 +1288,7 @@ class Session:
                 wr.unlift()
                 wr.unretract()
                 wr.g("; ring %d: retraction %s mm" % (sec + 1, fmt_val(self.ret_vals[sec], 3)))
-                wr.g("_ECAL_RET_SET LEN=%s SPEED=%s" % (fmt_val(self.ret_vals[sec], 4),
+                wr.g("_PRINTUNE_RET_SET LEN=%s SPEED=%s" % (fmt_val(self.ret_vals[sec], 4),
                                                         fmt_val(float(s.opt["ret_speed"]), 2)))
                 wr.no_retract = self.ret_vals[sec] <= 0
             wr.z_to(z)
@@ -1252,7 +1306,7 @@ class Session:
         wr.max_h = max(wr.max_h, zs[-1])
         wr.unretract()
         obj_end(wr, o)
-        wr.g("_ECAL_RET_RESTORE")
+        wr.g("_PRINTUNE_RET_RESTORE")
 
     def define_objects(self):
         lines = []
@@ -1263,8 +1317,8 @@ class Session:
 
     def header(self):
         s = self.s
-        h = ["; ECAL - Ellis tuning guide, combined session (ecal.py v%d)" % VERSION,
-             "; Needs ellis_calibration.cfg (Klipper/Kalico) included in printer.cfg.",
+        h = ["; Printune tuning session (printune_gen.py v%d)" % VERSION,
+             "; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.",
              "; Order: squish -> PA -> EM -> retraction. Picks are applied to every later test.",
              "; PA values: %s" % ", ".join(fmt_val(v) for v in self.pa_vals),
              "; PA fine offsets: %s" % ", ".join(fmt_val(v, 5) for v in self.pa_fine),
@@ -1275,7 +1329,7 @@ class Session:
              "; Firmware retraction: %s, z-hop %.2f, toolhead clearance radius %.0f mm" % (
                  s.fw_retract, s.z_hop, s.clearance)]
         if s.h1 < 0.25 or s.w_first < 1.2 * s.nozzle:
-            h.append("; NOTE: Ellis recommends first layer >= 0.25 mm and first-layer width >= 120 %% "
+            h.append("; NOTE: use a first layer >= 0.25 mm and first-layer width >= 120 %% "
                      "(profile: %.2f mm, %.2f mm)" % (s.h1, s.w_first))
         return h
 
@@ -1326,7 +1380,7 @@ def object_names(lines):
 
 
 def find_marker(lines):
-    """Return the ECAL object's name as typed in Orca, or None. The '; printing object'
+    """Return the Printune object's name as typed in Orca, or None. The '; printing object'
     comment keeps '=' and ','; EXCLUDE_OBJECT_DEFINE names are sanitised, so they are only
     a fallback (options in the name are then lost)."""
     for name in object_names(lines):
@@ -1342,7 +1396,7 @@ def find_marker(lines):
 
 def options_from_name(name):
     out = {}
-    # Orca names objects after the file, extension included ("ECAL temps=260,250.stl")
+    # Orca names objects after the file, extension included ("Printune temps=260,250.stl")
     name = re.sub(r"\.(stl|3mf|obj|step|stp|amf)$", "", name.strip(), flags=re.I)
     for tok in name.split():
         if "=" in tok:
@@ -1359,12 +1413,12 @@ def split_orca(lines):
     '; FEATURE: Custom' tag) up to the end of the file."""
     first_layer = next((i for i, l in enumerate(lines) if l.strip() in ("; CHANGE_LAYER", ";LAYER_CHANGE")), None)
     if first_layer is None:
-        raise SystemExit("ECAL: no layer-change tag found - is this OrcaSlicer G-code?")
+        raise SystemExit("Printune: no layer-change tag found - is this OrcaSlicer G-code?")
     custom = [i for i, l in enumerate(lines) if l.strip() in ("; FEATURE: Custom", ";TYPE:Custom")]
     starts = [i for i in custom if i < first_layer]
     ends = [i for i in custom if i > first_layer]
     if not starts or not ends:
-        raise SystemExit("ECAL: could not find start/end G-code markers")
+        raise SystemExit("Printune: could not find start/end G-code markers")
     s0 = starts[-1]
     e0 = ends[-1]
     return lines[:s0 + 1], lines[s0 + 1:first_layer], lines[e0:]
@@ -1377,7 +1431,7 @@ def build_from_orca(lines, extra_opts=None):
     opts.update(extra_opts or {})
     others = [n for n in object_names(lines) if not n.upper().startswith(MARKER)]
     if others:
-        sys.stderr.write("ECAL: the session replaces the whole plate; these objects are not printed: %s\n"
+        sys.stderr.write("Printune: the session replaces the whole plate; these objects are not printed: %s\n"
                          % ", ".join(others))
     s = Settings(cfg, opts)
     ses = Session(s)
@@ -1386,7 +1440,7 @@ def build_from_orca(lines, extra_opts=None):
     # drop Orca's own object definitions (ours replace them) and its first-line M73 stays
     head = [l for l in head if not l.startswith("EXCLUDE_OBJECT_DEFINE")]
     ins = next((i for i, l in enumerate(head) if l.strip() == "; EXECUTABLE_BLOCK_START"), 0) + 1
-    defs = ["SET_GCODE_VARIABLE MACRO=_ECAL VARIABLE=loaded VALUE=1 ; fails fast if ellis_calibration.cfg is missing"]
+    defs = ["SET_GCODE_VARIABLE MACRO=_PRINTUNE VARIABLE=loaded VALUE=1 ; fails fast if printune.cfg is missing"]
     defs += ses.define_objects()
     head = head[:ins] + ses.header() + defs + head[ins:]
     wr = ses.body()
@@ -1434,7 +1488,7 @@ def build_standalone(cfg_overrides, opts, start=START_GCODE, end=END_GCODE):
     ses.layout()
     wr = ses.body()
     out = ses.header() + [
-        "SET_GCODE_VARIABLE MACRO=_ECAL VARIABLE=loaded VALUE=1 ; fails fast if ellis_calibration.cfg is missing"
+        "SET_GCODE_VARIABLE MACRO=_PRINTUNE VARIABLE=loaded VALUE=1 ; fails fast if printune.cfg is missing"
     ] + ses.define_objects() + ["; ----- start G-code -----", start] + wr.out + ["; ----- end G-code -----", end]
     return out, ses
 
@@ -1450,7 +1504,7 @@ def main(argv=None):
     ap.add_argument("--from", dest="src", help="read profile + start/end G-code from this Orca G-code")
     ap.add_argument("-o", "--output", help="write the session to this file")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                    help="override an Orca setting or ECAL option (repeatable)")
+                    help="override an Orca setting or Printune option (repeatable)")
     ap.add_argument("--start", default=START_GCODE, help="stand-alone start G-code")
     ap.add_argument("--end", default=END_GCODE, help="stand-alone end G-code")
     a = ap.parse_args(argv)
@@ -1461,7 +1515,7 @@ def main(argv=None):
         (opts if k in OPTIONS else cfg)[k] = v
 
     if a.gcode and not a.src and not a.output:
-        # Orca post-processing mode: in place, only if the ECAL object is on the plate
+        # Orca post-processing mode: in place, only if the Printune object is on the plate
         with open(a.gcode, encoding="utf-8", errors="replace") as f:
             lines = f.read().split("\n")
         if not find_marker(lines):
@@ -1469,10 +1523,10 @@ def main(argv=None):
         out, ses = build_from_orca(lines, opts)
         write(a.gcode, out)
         out_name = os.environ.get("SLIC3R_PP_OUTPUT_NAME")
-        if out_name and "ecal" not in os.path.basename(out_name).lower():
+        if out_name and "printune" not in os.path.basename(out_name).lower():
             base, ext = os.path.splitext(out_name)
             with open(a.gcode + ".output_name", "w", encoding="utf-8") as f:
-                f.write(base + "_ECAL" + ext)
+                f.write(base + "_PRINTUNE" + ext)
         return 0
 
     if a.src or a.gcode:
@@ -1484,12 +1538,12 @@ def main(argv=None):
         out, ses = build_from_orca(lines, opts)
     else:
         out, ses = build_standalone(cfg, opts, a.start, a.end)
-    path = a.output or "ecal_session.gcode"
+    path = a.output or "printune_session.gcode"
     write(path, out)
-    print("ECAL: wrote %s (%d lines, %.1f m filament, ~%.0f min of moves + heating and pauses)"
+    print("Printune: wrote %s (%d lines, %.1f m filament, ~%.0f min of moves + heating and pauses)"
           % (path, len(out), ses.wr.e_total / 1000, ses.wr.t_total / 60))
     for w in ses.warn:
-        print("ECAL warning:", w)
+        print("Printune warning:", w)
     return 0
 
 

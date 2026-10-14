@@ -16,7 +16,7 @@ services:
     ports:
       - "127.0.0.1:8080:80"
     volumes:
-      # the folder holding ellis_calibration.cfg (the macros under test), read live
+      # the folder holding printune.cfg (the macros under test), read live
       - ..:/home/pi/host:ro
       - ./gcodes:/home/pi/printer_data/gcodes
       - ./logs:/home/pi/printer_data/logs

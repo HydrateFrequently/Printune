@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shaded 3D render of a simulated ECAL session (needs pyvista, scipy).
+"""Shaded 3D render of a simulated Printune session (needs pyvista, scipy).
 
 Low parts are drawn from the heightmap that check_gcode.py writes
 (<gcode>.height.npy, 0.25 mm grid). The retraction towers have overhanging
