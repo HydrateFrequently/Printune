@@ -112,5 +112,6 @@ with open(dst, "w") as f:
 EOF
 say "Mainsail sidebar link added (.theme/navi.json)"
 
+say "Printune comes without any warranty: you use it and the G-code it generates at your own risk."
 say "done. Restart Moonraker and Kalico: sudo systemctl restart moonraker klipper"
 say "then open Printune in the Mainsail sidebar, or http://<printer>/server/printune on your phone."

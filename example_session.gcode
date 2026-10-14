@@ -1,4 +1,6 @@
 ; Printune tuning session (printune_gen.py v5)
+; DISCLAIMER: generated G-code, provided as is without any warranty. Use it at your own
+; risk; the authors take no responsibility for any damage. Watch the print.
 ; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.
 ; Order: squish -> PA -> EM -> retraction. Picks are applied to every later test.
 ; PA values: 0, 0.005, 0.01, 0.015, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05, 0.055, 0.06, 0.065, 0.07, 0.075, 0.08

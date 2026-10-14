@@ -15,6 +15,8 @@ Filament tuning for Kalico printers, made for people who just want to press a bu
 | Session | all tests: about 2 h 10 min of printing plus heating and your decision time, about 17 m of filament |
 | Licence | GPL-3.0-or-later |
 
+> **Use at your own risk.** Printune generates G-code for your printer. We take no responsibility for that G-code or what it does; see [Disclaimer](#disclaimer).
+
 ## Install
 
 On the printer (over SSH):
@@ -104,6 +106,10 @@ You can also slice the session in Orca with your own process profile, so the tes
 3. The exported preset is then a copy of the filament preset you sliced with plus your picks, named "<preset> (Printune)".
 
 Options: `skip` (`patches,pa,em,ret`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, `ret_speed`, `temps`, `patches_extra`, `em_infill`, `em_size`, `em_height`, `clearance`. Orca only runs the script on export or upload, and not with *Use 3MF instead of G-code* switched on.
+
+## Disclaimer
+
+**Use at your own risk.** Printune is provided as is, without any warranty. You use it and the G-code it generates at your own risk; the authors take no responsibility for damage to your printer, property or anything else. Watch the first session from start to finish. The full terms are in the GPL-3.0 licence (sections 15 and 16: no warranty, no liability).
 
 ## Caveats
 

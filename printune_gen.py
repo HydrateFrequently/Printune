@@ -1318,6 +1318,8 @@ class Session:
     def header(self):
         s = self.s
         h = ["; Printune tuning session (printune_gen.py v%d)" % VERSION,
+             "; DISCLAIMER: generated G-code, provided as is without any warranty. Use it at your own",
+             "; risk; the authors take no responsibility for any damage. Watch the print.",
              "; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.",
              "; Order: squish -> PA -> EM -> retraction. Picks are applied to every later test.",
              "; PA values: %s" % ", ".join(fmt_val(v) for v in self.pa_vals),

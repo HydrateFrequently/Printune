@@ -128,6 +128,7 @@ input[type=text], input[type=number] {
 #prompt .pgroup button, #prompt .pbuttons button { min-height: 56px; font-weight: 600; }
 #prompt .pfooter { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 #prompt .pfooter button { flex: 1 1 140px; }
+.disclaimer { font-size: 13px; color: var(--muted); text-align: center; margin: 24px 8px 8px; }
 /* Running */
 .run-head h2 { margin: 0; font-size: 22px; overflow-wrap: anywhere; }
 .stages { display: flex; list-style: none; margin: 14px 0 4px; padding: 0; gap: 4px; }
@@ -346,6 +347,7 @@ input[type=text], input[type=number] {
       <button type="button" class="danger" id="cancelBtn">Cancel</button>
     </div>
   </section>
+  <p class="disclaimer">Printune comes without any warranty. You run the G-code it generates at your own risk; we take no responsibility for what it does.</p>
 </main>
 <div id="toast" role="alert" hidden></div>
 
@@ -894,7 +896,7 @@ function buildStartCommand() {
 async function startSession() {
   $("formErr").hidden = true;
   if (!form.tests.size) return;
-  if (!(await ask("Make sure the plate is clean and empty. Start?", "Start"))) return;
+  if (!(await ask("Make sure the plate is clean and empty. Printune generates the G-code for this print; you run it at your own risk, and we take no responsibility for what it does. Stay near the printer. Start?", "Start"))) return;
   saveForm();
   store("printune.soakOn", pt().enclosed && form.soak ? 1 : 0);
   // a results prompt from the last session must not show during this one
