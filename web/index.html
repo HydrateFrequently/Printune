@@ -155,6 +155,13 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
 #prompt .pgroup button, #prompt .pbuttons button { min-height: 56px; font-weight: 600; }
 /* belt readout: read from arm's length on a phone */
 #beltView { margin: 4px 0 8px; }
+#beltView .jog { margin: 0 0 10px; background: var(--card2); border-radius: var(--radius); padding: 8px 12px; }
+#beltView .jog summary { font-weight: 600; cursor: pointer; }
+#beltView .jog .pos { text-align: center; font-variant-numeric: tabular-nums; font-size: 18px; margin: 6px 0; }
+#beltView .jog .pad { display: grid; grid-template-columns: repeat(3, minmax(0, 64px)); gap: 6px; justify-content: center; }
+#beltView .jog .pad button, #beltView .jog .row button { min-height: 52px; font-size: 18px; }
+#beltView .jog .row { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-top: 8px; }
+#beltView .jog .row button.sel { outline: 2px solid var(--primary); }
 #beltView .live { text-align: center; padding: 10px 0 4px; }
 #beltView .live .hz { font-size: 64px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
 #beltView .live .hz.out { color: var(--muted); text-decoration: line-through; }
@@ -627,7 +634,7 @@ const TESTS = [
 const SUBSCRIBE = {
   print_stats: null, display_status: null, virtual_sdcard: null, pause_resume: null, idle_timeout: null,
   extruder: ["temperature", "target"], heater_bed: ["temperature", "target"],
-  toolhead: ["homed_axes"], gcode_move: ["homing_origin"],
+  toolhead: ["homed_axes", "position"], gcode_move: ["homing_origin", "gcode_position"],
   printune: null, "gcode_macro _PRINTUNE": null,
 };
 const NAME_RE = /[^A-Za-z0-9 ._()+\-]/g;
@@ -1036,13 +1043,74 @@ function renderPrompt() {
 // Belt tension: big numbers on top of the belt prompts, for a phone held at the printer
 let beltBuzz = "";
 function fmtHz(v) { return v == null ? "--" : Number(v).toFixed(1); }
+// Jog pad: the user moves the toolhead to where their printer's guide says to pluck.
+// Printune itself never moves it; every move here is a button press.
+let jogStep = 10;
+function jogPad(open) {
+  const th = obj("toolhead"), homed = String(th.homed_axes || "");
+  const d = el("details", { class: "jog" });
+  if (open || !pt().belt_pos) d.open = true;      // nothing saved yet: open, so the move isn't forgotten
+  d.appendChild(el("summary", {}, "Move the toolhead"));
+  const pos = obj("gcode_move").gcode_position || th.position || [];
+  d.appendChild(el("div", { class: "pos" }, homed.includes("x") && homed.includes("y") && pos.length
+    ? "X " + Number(pos[0]).toFixed(1) + "   Y " + Number(pos[1]).toFixed(1) + (homed.includes("z") ? "   Z " + Number(pos[2]).toFixed(1) : "")
+    : "Not homed: home first"));
+  const move = (axis, dist) => () => runGcode("SAVE_GCODE_STATE NAME=_printune_jog\nG91\nG1 " + axis + dist +
+    " F" + (axis === "Z" ? 600 : 6000) + "\nRESTORE_GCODE_STATE NAME=_printune_jog");
+  if (!(homed.includes("x") && homed.includes("y"))) {
+    const r = el("div", { class: "row" });
+    const h = el("button", { type: "button", class: "primary" }, "Home");
+    h.onclick = () => runGcode("G28");
+    r.appendChild(h);
+    d.appendChild(r);
+    return d;
+  }
+  const pad = el("div", { class: "pad" });
+  const cell = (label, axis, sign) => {
+    if (!label) return el("span");
+    const bt = el("button", { type: "button" }, label);
+    bt.onclick = () => move(axis, sign * jogStep)();
+    return bt;
+  };
+  for (const c of [["", 0, 0], ["Y+", "Y", 1], ["", 0, 0], ["X-", "X", -1], ["", 0, 0], ["X+", "X", 1], ["", 0, 0], ["Y-", "Y", -1], ["", 0, 0]])
+    pad.appendChild(cell(...c));
+  d.appendChild(pad);
+  const r = el("div", { class: "row" });
+  for (const st of [1, 10, 50]) {
+    const bt = el("button", { type: "button", class: st === jogStep ? "sel" : "" }, st + " mm");
+    bt.onclick = () => { jogStep = st; renderBelts(); };
+    r.appendChild(bt);
+  }
+  if (homed.includes("z")) {
+    const z = el("button", { type: "button" }, "Z +10");
+    z.onclick = move("Z", 10);
+    r.appendChild(z);
+  }
+  d.appendChild(r);
+  const bp = pt().belt_pos;
+  const r2 = el("div", { class: "row" });
+  if (bp) {
+    const go = el("button", { type: "button", class: "primary" }, "Go to belt tensioning position");
+    go.onclick = () => runGcode("_PRINTUNE_BELT_POS GO=1");
+    r2.appendChild(go);
+  }
+  const sv = el("button", { type: "button" }, "Save belt tensioning position");
+  sv.onclick = () => runGcode("_PRINTUNE_BELT_POS SAVE=1");
+  r2.appendChild(sv);
+  d.appendChild(r2);
+  if (bp) d.appendChild(el("div", { class: "pos" }, "Saved: X " + Number(bp.x).toFixed(1) + "  Y " + Number(bp.y).toFixed(1)));
+  return d;
+}
+
 function renderBelts() {
   const b = pt().belts || {};
   const on = !!prompt && /^Printune - (belt|pluck|tap)/i.test(prompt.title || "") && !!b.target;
   show("beltView", on);
   if (!on) return;
   const box = $("beltView");
+  const jogOpen = !!(box.querySelector(".jog") || {}).open;
   box.textContent = "";
+  if (pt().state !== "listening") box.appendChild(jogPad(jogOpen));
   const now = pt().belt_now || (/belt (A|B)/i.exec(prompt.title || "") || [])[1] || "";
   const cur = (now === "A" || now === "B") ? b[now] : null;
   // the newest pluck of the belt being measured, big

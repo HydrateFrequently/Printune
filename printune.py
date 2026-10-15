@@ -411,6 +411,8 @@ class Printune:
         gcode.register_command(
             "_PRINTUNE_BELT_TAP", self.cmd_PRINTUNE_BELT_TAP, desc=self.cmd_PRINTUNE_BELT_TAP_help)
         gcode.register_command(
+            "_PRINTUNE_BELT_POS", self.cmd_PRINTUNE_BELT_POS, desc=self.cmd_PRINTUNE_BELT_POS_help)
+        gcode.register_command(
             "PRINTUNE_RECORD", self.cmd_PRINTUNE_RECORD, desc=self.cmd_PRINTUNE_RECORD_help)
         gcode.register_command(
             "_PRINTUNE_SHAPER_RUN", self.cmd_PRINTUNE_SHAPER_RUN, desc=self.cmd_PRINTUNE_SHAPER_RUN_help)
@@ -431,7 +433,7 @@ class Printune:
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
                 "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target, "belt_tol": self.belt_tol,
                 "belt_now": self.belt_now if self.belt_now in ("A", "B") else None,
-                "belt_live": self.belt_live,
+                "belt_live": self.belt_live, "belt_pos": self._belt_pos(),
                 "shaper": self.shaper, "graphs": self.graphs, "setup": self._setup_status(),
                 "procs": {k: list(v) for k, v in PROCS.items()},
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
@@ -577,6 +579,51 @@ class Printune:
             gcmd.respond_info("Printune: belt %s: %s" % (belt, res["note"]))
         else:
             gcmd.respond_info("Printune: belt %s: %.1f Hz (%s)" % (belt, res["freq"], res["note"]))
+
+    # ---------------- belt tensioning position (the user's own, saved from the jog pad) ----------------
+    def _belt_pos_file(self):
+        return os.path.join(self.out_dir, "belt_position.json")
+
+    def _belt_pos(self):
+        if not hasattr(self, "_bpos"):
+            self._bpos = None
+            try:
+                with open(self._belt_pos_file()) as f:
+                    d = json.load(f)
+                self._bpos = {k: float(d[k]) for k in ("x", "y", "z") if d.get(k) is not None}
+                if "x" not in self._bpos or "y" not in self._bpos:
+                    self._bpos = None
+            except Exception:
+                pass
+        return self._bpos
+
+    cmd_PRINTUNE_BELT_POS_help = ("Printune: SAVE=1 stores where the toolhead is as the belt tensioning "
+                                  "position; GO=1 moves there (Z only ever goes up)")
+
+    def cmd_PRINTUNE_BELT_POS(self, gcmd):
+        th = self.printer.lookup_object("toolhead")
+        homed = th.get_status(self.reactor.monotonic())["homed_axes"]
+        if "x" not in homed or "y" not in homed:
+            raise gcmd.error("Printune: home the printer first")
+        pos = self.printer.lookup_object("gcode_move").get_status(self.reactor.monotonic())["gcode_position"]
+        if gcmd.get_int("SAVE", 0):
+            d = {"x": round(pos[0], 2), "y": round(pos[1], 2), "z": round(pos[2], 2) if "z" in homed else None}
+            os.makedirs(self.out_dir, exist_ok=True)
+            with open(self._belt_pos_file(), "w") as f:
+                json.dump(d, f)
+            self._bpos = {k: v for k, v in d.items() if v is not None}
+            gcmd.respond_info("Printune: belt tensioning position saved (X %.1f Y %.1f)" % (d["x"], d["y"]))
+            return
+        if gcmd.get_int("GO", 0):
+            bp = self._belt_pos()
+            if not bp:
+                raise gcmd.error("Printune: no belt tensioning position saved yet")
+            g = self.printer.lookup_object("gcode")
+            moves = ["SAVE_GCODE_STATE NAME=_printune_bpos", "G90"]
+            if "z" in homed and bp.get("z") is not None and pos[2] < bp["z"]:
+                moves.append("G1 Z%.2f F600" % bp["z"])           # up first, never down
+            moves += ["G1 X%.2f Y%.2f F6000" % (bp["x"], bp["y"]), "RESTORE_GCODE_STATE NAME=_printune_bpos"]
+            g.run_script_from_command("\n".join(moves))
 
     cmd_PRINTUNE_BELT_TAP_help = ("Printune: learn how the toolhead rings by itself from one light tap, "
                                   "so a tap is never taken for a belt")
