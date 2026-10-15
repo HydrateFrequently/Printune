@@ -33,9 +33,11 @@ Kalico, Moonraker, Mainsail or Fluidd, and `[exclude_object]`, `[pause_resume]`,
 
 To avoid breaking your printer, every change has been tried on:
 
-- **A virtual Kalico printer** (Docker, a simulated MCU that drives nothing), running whole tuning sessions from start to end, including heat soak, pauses and the phone page.
-- **A fleet of virtual printers** with beds from 120 to 375 mm, so the test layouts fit small and large printers.
-- **A G-code checker** (`tools/check_gcode.py`) that simulates every session and counts toolhead and gantry collisions with finished prints, from the measurements you enter.
+- **A virtual Kalico printer:** real Kalico, Moonraker and Mainsail on a simulated MCU that drives nothing, with simulated temperatures and accelerometer. Scripts drive whole tuning sessions from start to end, including heat soak, pauses and the phone page.
+- **A fleet of 30 virtual printer setups:** 8 bed sizes from 120×120 to 375×388 mm, running the wizard with PLA, ABS and TPU and Advanced tuning with PETG and ASA. All 30 passed with no errors.
+- **A G-code checker** (`tools/check_gcode.py`) that replays every generated session and looks for moves off the bed, the nozzle or toolhead hitting finished prints, the X gantry passing over prints taller than its measured height, and extrusion onto other objects. It found none across the fleet.
+- **A safety gate:** nothing prints until you have entered your own measured machine geometry and accepted the risk.
+- **The installer** on a clean virtual printer.
 - **Recordings from a real printer's accelerometers** (belt plucks and taps) for the belt tension module, compared with a microphone.
 - **OrcaSlicer 2.4.2** (from the command line) importing the exported presets.
 - **Reviews by separate AI agents** looking for mistakes in each finished feature.
