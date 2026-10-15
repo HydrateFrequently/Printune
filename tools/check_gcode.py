@@ -15,7 +15,7 @@ Writes paths.npz (segments) for the render scripts.
 
 Usage (the geometry is required, as for printune_gen.py; use your own measurements):
   check_gcode.py FILE --box=-X,+X,-Y,+Y --gantry=MM [--bed=X0,Y0,X1,Y1 | --bed=W,D]
-                 [--skip=cool,cone,bridge,mvs] [--low=1.2]
+                 [--skip=cool,cone,bridge,bridge_speed,bridge_flow,mvs] [--low=1.2]
   --skip simulates pressing "Skip" at those plate pauses.
 """
 import math
@@ -29,7 +29,7 @@ RES = 0.25  # heightmap resolution, mm
 
 
 def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388), skip=()):
-    """skip: WHAT labels (cool, cone, bridge, mvs) whose "Skip" button is pressed at the plate pause,
+    """skip: WHAT labels (cool, cone, bridge, bridge_speed, bridge_flow, mvs) whose "Skip" button is pressed at the plate pause,
     simulating the macros: those objects are excluded and the plate stays uncleared."""
     fa = math.pi * (fil_d / 2) ** 2
     x = y = z = 0.0

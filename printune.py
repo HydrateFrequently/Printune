@@ -18,8 +18,9 @@
 # and writes one JSON file that Orca imports
 # with File > Import > Import Configs. It always writes a new preset,
 # "<filament> (Printune)", so it never replaces one of your own presets.
-# The bridge test's speed and flow are process settings: they go into a second, small JSON file,
-# an Orca process preset holding just those two values.
+# The bridge test's speed and flow are process settings: they go into a second JSON file, an Orca
+# process preset (a copy of the sliced process preset with those two values changed, or, for a
+# session made on the printer, just those two values).
 # A session made by the wizard carries a small block of its own with the name you
 # typed, so its preset gets exactly that name.
 #
@@ -108,6 +109,82 @@ filament_ramming_parameters filament_plugin_config_overrides
 filament_dev_ams_drying_ams_limitations
 """.split())
 
+# Orca's process preset keys (Preset.cpp, s_Preset_print_options), without inherits and
+# compatible_*; the option types are from PrintConfig.cpp. Per-extruder-variant (vector) options
+# are lists in a preset file, the rest single values. Only keys in the sliced file are copied.
+PROCESS_KEYS = """
+layer_height initial_layer_print_height wall_loops alternate_extra_wall slice_closing_radius
+spiral_mode spiral_mode_smooth spiral_mode_max_xy_smoothing spiral_starting_flow_ratio
+spiral_finishing_flow_ratio slicing_mode top_shell_layers top_shell_thickness top_surface_density
+bottom_surface_density bottom_shell_layers bottom_shell_thickness extra_perimeters_on_overhangs
+ensure_vertical_shell_thickness reduce_crossing_wall detect_thin_wall detect_overhang_wall
+unsupported_wall_last overhang_reverse overhang_reverse_threshold overhang_reverse_internal_only
+wall_direction seam_position staggered_inner_seams wall_sequence is_infill_first
+sparse_infill_density fill_multiline tpms_adaptive tpms_interior_density tpms_adaptive_gradient
+gyroid_optimized sparse_infill_pattern sparse_infill_smooth_factor lateral_lattice_angle_1
+lateral_lattice_angle_2 infill_overhang_angle lightning_overhang_angle lightning_prune_angle
+lightning_straightening_angle top_surface_pattern top_surface_expansion
+top_surface_expansion_margin top_surface_expansion_direction bottom_surface_pattern
+top_surface_fill_order bottom_surface_fill_order infill_direction solid_infill_direction
+top_layer_direction bottom_layer_direction counterbore_hole_bridging infill_shift_step
+sparse_infill_rotate_template solid_infill_rotate_template symmetric_infill_y_axis
+skeleton_infill_density infill_lock_depth skin_infill_depth skin_infill_density
+infill_complete_top align_infill_direction_to_model extra_solid_infills center_of_surface_pattern
+separated_infills minimum_sparse_infill_area reduce_infill_retraction
+internal_solid_infill_pattern gap_fill_target ironing_type ironing_pattern ironing_flow
+ironing_speed ironing_spacing ironing_angle ironing_angle_fixed ironing_inset support_ironing
+support_ironing_pattern support_ironing_flow support_ironing_spacing max_travel_detour_distance
+fuzzy_skin fuzzy_skin_thickness fuzzy_skin_point_distance fuzzy_skin_first_layer
+fuzzy_skin_noise_type fuzzy_skin_mode fuzzy_skin_scale fuzzy_skin_octaves fuzzy_skin_persistence
+fuzzy_skin_ripples_per_layer fuzzy_skin_ripple_offset fuzzy_skin_layers_between_ripple_offset
+max_volumetric_extrusion_rate_slope max_volumetric_extrusion_rate_slope_segment_length
+extrusion_rate_smoothing_external_perimeter_only inner_wall_speed outer_wall_speed
+sparse_infill_speed internal_solid_infill_speed top_surface_speed support_speed
+support_object_xy_distance support_object_first_layer_gap support_interface_speed bridge_speed
+internal_bridge_speed gap_infill_speed travel_speed travel_speed_z initial_layer_speed
+outer_wall_acceleration initial_layer_acceleration top_surface_acceleration default_acceleration
+skirt_type skirt_loops skirt_speed min_skirt_length skirt_distance skirt_start_angle skirt_height
+single_loop_draft_shield draft_shield brim_width leading_brim_length extra_brim_width
+brim_object_gap brim_flow_ratio brim_use_efc_outline combine_brims brim_type brim_ears_max_angle
+brim_ears_detection_length brim_ears_outer_only enable_support support_type
+support_threshold_angle support_threshold_overlap enforce_support_layers raft_layers
+raft_first_layer_density raft_first_layer_expansion raft_contact_distance raft_expansion
+support_base_pattern support_base_pattern_spacing support_expansion support_style
+print_extruder_id print_extruder_variant independent_support_layer_height support_angle
+support_interface_top_layers support_interface_bottom_layers support_interface_pattern
+support_interface_spacing support_interface_loop_pattern support_top_z_distance
+support_on_build_plate_only support_critical_regions_only bridge_no_support thick_bridges
+thick_internal_bridges dont_filter_internal_bridges enable_extra_bridge_layer max_bridge_length
+print_sequence print_order support_remove_small_overhang filename_format outer_wall_filament_id
+inner_wall_filament_id support_bottom_z_distance sparse_infill_filament_id
+internal_solid_filament_id top_surface_filament_id bottom_surface_filament_id support_filament
+support_interface_filament support_interface_not_for_body ooze_prevention
+standby_temperature_delta preheat_time preheat_steps interface_shells line_width
+initial_layer_line_width inner_wall_line_width outer_wall_line_width sparse_infill_line_width
+internal_solid_infill_line_width skin_infill_line_width skeleton_infill_line_width
+top_surface_line_width support_line_width infill_wall_overlap top_bottom_infill_wall_overlap
+bridge_flow bridge_line_width internal_bridge_flow elefant_foot_compensation
+elefant_foot_compensation_layers elefant_foot_layers_density xy_contour_compensation
+xy_hole_compensation resolution enable_prime_tower prime_tower_enable_framework prime_tower_width
+prime_tower_brim_width prime_tower_skip_points prime_volume prime_tower_infill_gap
+prime_tower_flat_ironing belt_purge_tower_width belt_purge_tower_object
+enable_tower_interface_features enable_tower_interface_cooldown_during_tower
+wipe_tower_no_sparse_layers wipe_tower_sparse_layers_combination flush_into_infill
+flush_into_objects flush_into_support enable_mixed_color_sublayer tree_support_branch_angle
+tree_support_angle_slow
+""".split()
+PROCESS_VECTOR_KEYS = set("""
+inner_wall_speed outer_wall_speed sparse_infill_speed internal_solid_infill_speed
+top_surface_speed support_speed support_interface_speed bridge_speed internal_bridge_speed
+gap_infill_speed travel_speed travel_speed_z initial_layer_speed outer_wall_acceleration
+initial_layer_acceleration top_surface_acceleration default_acceleration print_extruder_id
+print_extruder_variant
+""".split())
+PROCESS_STRING_KEYS = set("""
+sparse_infill_rotate_template solid_infill_rotate_template extra_solid_infills filename_format
+print_extruder_variant
+""".split())
+
 TAIL_BYTES = 2 * 1024 * 1024
 HEAD_BYTES = 2 * 1024 * 1024
 SUFFIX = " (Printune)"
@@ -146,6 +223,29 @@ def unescape_strings(raw):
             if i >= n:
                 out.append("")
                 return out
+
+
+def unescape_cstyle(raw):
+    """Orca's unescape_string_cstyle for a single string option: \\n, \\r, \\\\ and \\"."""
+    out, i = [], 0
+    while i < len(raw):
+        c = raw[i]
+        if c == "\\" and i + 1 < len(raw):
+            i += 1
+            c = {"n": "\n", "r": "\r"}.get(raw[i], raw[i])
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def process_value(key, raw):
+    """Orca config-block value of a process option -> its value in a preset file."""
+    raw = raw.strip()
+    if key in PROCESS_VECTOR_KEYS:
+        if key in PROCESS_STRING_KEYS:
+            return unescape_strings(raw) or [""]
+        return raw.split(",") if raw else [""]
+    return unescape_cstyle(raw) if key in PROCESS_STRING_KEYS else raw
 
 
 def parse_value(key, raw):
@@ -1275,6 +1375,11 @@ class Printune:
             # Orca's "Overhangs and external bridges fan speed" (used when above the normal fan)
             put("enable_overhang_bridge_fan", "1", "overhang and bridge fan on")
             put("overhang_fan_speed", str(int(S["br_fan"])), "bridge fan")
+            # Orca's "Overhang cooling activation threshold": at 0 % every outer wall runs at the
+            # bridge fan (GCode::_extrude), not at the cooling test's constant fan. 95 % (Orca's
+            # default) keeps it to bridges and walls with almost nothing below them.
+            if preset.get("overhang_fan_threshold", [""])[0] in ("", "0%"):
+                put("overhang_fan_threshold", "95%", "overhang fan threshold")
         if "mvs" in tested and float(S.get("mvs", 0)) > 0:
             put("filament_max_volumetric_speed", fnum(S["mvs"], 1), "max volumetric speed")
         if "pa" in tested:
@@ -1316,13 +1421,14 @@ class Printune:
             self._export_process(gcmd, cfg, groups, name, proc, version)
 
     def _export_process(self, gcmd, cfg, groups, fname_base, values, version):
-        """An Orca process preset holding the bridge speed and flow: on the sliced process preset's
-        system parent when the session was sliced in Orca, else a preset of its own (Orca fills
-        in its defaults for the rest)."""
+        """An Orca process preset with the bridge speed and flow. Sliced in Orca: a copy of the
+        process preset the session was sliced with (every process setting in the file), on its
+        system parent, with these values changed. Made by the wizard (no process preset was
+        sliced): a preset holding only these values, on Orca's defaults."""
         pid = first(cfg, "print_settings_id")
         parent = groups[0] if len(groups) == 3 else ""
-        if first(cfg, "printune_named") == "1" or not pid:
-            # made by the wizard: no process preset was sliced
+        wizard = first(cfg, "printune_named") == "1" or not pid
+        if wizard:
             name, inherits = fname_base + " bridges", ""
         elif pid.endswith(SUFFIX):
             name, inherits = pid, parent
@@ -1333,25 +1439,36 @@ class Printune:
             name, inherits = base + ("" if vendor == "System" else " " + vendor) + SUFFIX, pid
         else:
             name, inherits = pid + SUFFIX, ""
-        # Orca's minimal user process preset: name, inherits, version, print_settings_id (this
-        # marks it as a process preset on import), and the changed settings. bridge_speed is a
-        # per-extruder-variant list, bridge_flow a single value.
+        # bridge_speed is a per-extruder-variant list, bridge_flow a single value
         nvar = max(1, len(parse_value("print_extruder_variant", cfg["print_extruder_variant"]))
                    if "print_extruder_variant" in cfg else 1)
         out = os.path.join(self.out_dir, re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json")
         preset = {"type": "process", "name": name, "inherits": inherits, "from": "User",
                   "instantiation": "true"}
+        if not wizard:
+            for k in PROCESS_KEYS:
+                if k in cfg:
+                    preset[k] = process_value(k, cfg[k])
         try:
             with open(out) as f:
                 old = json.load(f)
             if isinstance(old, dict) and old.get("type") == "process" and old.get("name") == name:
-                preset = old          # an earlier bridge test of this preset: keep what it had
+                # an earlier bridge test of this preset: keep the value this session did not test
+                # (and, for the wizard's preset, whatever else it had)
+                if wizard:
+                    preset = old
+                else:
+                    for k in ("bridge_speed", "bridge_flow"):
+                        if k not in values and k in old:
+                            preset[k] = old[k]
         except (OSError, ValueError):
             pass
         if "bridge_speed" in values:
             preset["bridge_speed"] = [values["bridge_speed"]] * nvar
         if "bridge_flow" in values:
             preset["bridge_flow"] = values["bridge_flow"]
+        # always this session's: an old file may have another parent or Orca version
+        preset["inherits"] = inherits
         preset["print_settings_id"] = name
         preset["version"] = version
         os.makedirs(self.out_dir, exist_ok=True)
@@ -1362,15 +1479,19 @@ class Printune:
         self.last_proc_name = name
         self.last_proc_rel = out if rel.startswith("..") else rel
         logging.info("_PRINTUNE_EXPORT wrote %s (%s)", out, values)
+        picked = "; ".join("%s %s" % ({"bridge_speed": "bridge speed", "bridge_flow": "bridge flow"}[k],
+                                      v + (" mm/s" if k == "bridge_speed" else ""))
+                           for k, v in sorted(values.items()))
+        if wizard:
+            what = ("It holds only these values, on top of Orca's defaults. To keep your own process "
+                    "settings, type them into your process preset instead.")
+        else:
+            what = ("It is a copy of the process preset you sliced with (\"%s\")%s, with only these "
+                    "values changed." % (pid, (", based on \"%s\"" % inherits) if inherits else ""))
         gcmd.respond_info(
             "Printune: Orca process preset \"%s\" written to %s\n%s\n"
-            "Import it the same way (File > Import > Import Configs); it shows up under the process presets. "
-            "It holds only these values, on top of %s. To keep your own process settings, type them into "
-            "your process preset instead." % (
-                name, self.last_proc_rel,
-                "; ".join("%s %s" % ({"bridge_speed": "bridge speed", "bridge_flow": "bridge flow"}[k],
-                                     v + (" mm/s" if k == "bridge_speed" else "")) for k, v in sorted(values.items())),
-                ("\"%s\"" % inherits) if inherits else "Orca's defaults"))
+            "Import it the same way (File > Import > Import Configs); it shows up under the process "
+            "presets. %s" % (name, self.last_proc_rel, picked, what))
 
     def _export_filament(self, gcmd, cfg, path, preset, name, fid, keys, changed, version):
         fname = re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json"
@@ -1390,6 +1511,8 @@ class Printune:
                     and same_type and "Printune" in str(old.get("filament_notes", ""))):
                 for k in keys:
                     old[k] = preset[k]
+                # this session's parent (the version is set below): the old file may be older
+                old["inherits"] = preset["inherits"]
                 preset, merged = old, True
         except (OSError, ValueError):
             pass

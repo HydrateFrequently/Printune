@@ -1634,17 +1634,35 @@ BR_MODES = ("fan", "speed", "flow")
 
 def bridge_flow(s, ratio):
     """(cross-section mm2, line width mm, line spacing mm) of an external bridge line at Orca's
-    bridge_flow = ratio, as LayerRegion::bridging_flow and Flow compute it:
+    bridge_flow = ratio, exactly as LayerRegion::bridging_flow and Flow compute it:
     thick_bridges on: a round thread of diameter (bridge_line_width or the nozzle) x sqrt(ratio),
       spaced at the diameter + 0.05 mm;
     off: the normal rounded-rectangle line (bridge_line_width, else the internal solid infill
-      width, at the layer height) with its area times ratio, at the line's normal spacing.
+      width, at the layer height h, area A, spacing w - h(1 - pi/4)) through
+      Flow::with_cross_section(A x ratio):
+        ratio > 1: same spacing, the line grows in height (h' = A ratio / spacing);
+        ratio < 1: the line gets narrower, w' = w - A (1 - ratio) / h, and its spacing is
+          recomputed (w' - h (1 - pi/4)), so the lines move closer together;
+        w' <= h: Orca makes a w = h = sqrt(A ratio / pi) line at the old spacing, and that
+          line's area (Flow::mm3_per_mm) is pi/4 of its square, i.e. A ratio / 4.
     Either way the spacing is divided by bridge_density; the printer's flow (M221) applies on top."""
     if s.thick_bridges:
-        d = (s.w_bridge or s.nozzle) * math.sqrt(ratio)
+        d = (s.w_bridge or s.nozzle) * math.sqrt(ratio) if ratio > 0 else (s.w_bridge or s.nozzle)
         return math.pi * d * d / 4.0, d, (d + 0.05) / s.br_density
-    w = s.w_bridge or s.w_solid
-    return Writer.area(w, s.h) * ratio, w, spacing(w, s.h) / s.br_density
+    w, h = s.w_bridge or s.w_solid, s.h
+    a0, sp0 = h * spacing(w, h), spacing(w, h)      # Flow::mm3_per_mm, rounded_rectangle_spacing
+    an = a0 * ratio
+    eps = 1e-4                                      # libslic3r EPSILON
+    if an > a0 + eps:
+        h2 = an / sp0
+        return an, sp0 + h2 * (1 - math.pi / 4), sp0 / s.br_density
+    if an < a0 - eps:
+        w2 = w - (a0 - an) / h
+        if w2 > h:
+            return an, w2, spacing(w2, h) / s.br_density
+        d = math.sqrt(an / math.pi)
+        return d * d * math.pi / 4.0, d, sp0 / s.br_density
+    return a0, w, sp0 / s.br_density
 
 
 class BridgeTest:
@@ -2409,7 +2427,8 @@ class Session:
                                                               (" FANS=" + ",".join(map(str, b.fans))) if b.fans else ""))
             for k, mode in enumerate(BR_MODES):
                 # a plate pause can skip the rest of the bridge test
-                self._plate(wr, bo[mode], skip=names(BR_MODES[k:]), what="bridge")
+                # (the first one all of it, a later one the passes still to come)
+                self._plate(wr, bo[mode], skip=names(BR_MODES[k:]), what="bridge" if k == 0 else "bridge_" + mode)
                 self._bridge_pass(wr, bo[mode][0], mode)
                 if mode == "fan":
                     self._cp(wr, "_PRINTUNE_CP STEP=bridge_fan OBJ=%s SPANS=%s" % (
@@ -2767,7 +2786,7 @@ class Session:
 
     def _plate(self, wr, objs, skip=None, what=""):
         """Checkpoint before a test that goes on a new plate: clear the plate, printer stays hot.
-        skip: objects a 'skip' button cancels there; what: its label (cool, cone, mvs)."""
+        skip: objects a 'skip' button cancels there; what: its label (cool, cone, bridge, bridge_speed, bridge_flow, mvs)."""
         n = objs[0].plate
         if n <= 1:
             return

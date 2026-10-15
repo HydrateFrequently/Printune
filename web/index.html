@@ -980,7 +980,8 @@ function renderResultsExtras() {
     $("dlProcBtn").setAttribute("download", (pname || "printune process") + ".json");
     $("dlProcHelp").textContent = "Bridge speed and flow are print settings, not filament settings. Import this file the same way: " +
       "it shows up under your process presets as " + (pname || "the preset name") +
-      ", with only these two values set. Or type them into your own process preset.";
+      ". It sets these two values, on a copy of the process preset you sliced with when the session was sliced in Orca, " +
+      "else on Orca's defaults. Or type them into your own process preset.";
   }
   show("doneBtn", res);
   $("doneBtn").className = "block" + (res && !($("pResults").hidden) ? "" : " primary");
@@ -1425,13 +1426,15 @@ function maybeSyntheticResults() {
     items.push({ type: "text", text: "Orca flow ratio: " + fr.toFixed(3) });
   }
   if (tested.includes("cool") && Number(m.cool_fan) >= 0) {
-    items.push({ type: "text", text: "Fan: " + Number(m.cool_fan) + " %, constant (also for overhangs)" });
+    const brFan = tested.includes("bridge") && Number(m.br_fan) >= 0;
+    items.push({ type: "text", text: "Fan: " + Number(m.cool_fan) + " %, constant" +
+      (brFan ? " (bridges and overhang walls: the bridge fan below)" : " (also for overhangs)") });
   }
   if (tested.includes("cool") && Number(m.cool_lt) > 0) {
     items.push({ type: "text", text: "Minimum layer time: " + Number(m.cool_lt) + " s" });
   }
   if (tested.includes("bridge") && Number(m.br_fan) >= 0) {
-    items.push({ type: "text", text: "Bridge fan: " + Number(m.br_fan) + " % (Filament › Cooling › Overhangs and external bridges fan speed)" });
+    items.push({ type: "text", text: "Bridge fan: " + Number(m.br_fan) + " % (Filament › Cooling › Overhangs and external bridges fan speed, with Force cooling for overhangs and bridges ticked)" });
   }
   if (tested.includes("bridge") && Number(m.br_speed) > 0) {
     items.push({ type: "text", text: "Bridge speed: " + Number(m.br_speed) + " mm/s (Process › Speed › Bridge › External)" });
