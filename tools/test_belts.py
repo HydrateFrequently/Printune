@@ -23,21 +23,31 @@ rng = np.random.default_rng(1)
 
 
 def rec(events, secs=8.0, noise=30.0, fan=None):
-    """events: (time, kind, freq, amp, ratio2) with kind pluck | tap."""
+    """events: (time, kind, freq, amp, ratio2[, tau]) with kind pluck | hard | harm |
+    tap | ring. harm: amp is (F, 2F, 4F). ring: one decaying tone (a frame mode, a click)."""
     t = np.arange(int(secs * FS)) / FS
     ax, ay, az = (rng.normal(0, noise, len(t)) for _ in range(3))
     if fan:
         for a in (ax, ay, az):
             a += 3 * noise * np.sin(2 * np.pi * fan * t)
-    for t0, kind, fr, amp, r2 in events:
+    for ev in events:
+        t0, kind, fr, amp, r2 = ev[:5]
+        tau = ev[5] if len(ev) > 5 else 0.3
         tt = t - t0
         on = tt >= 0
-        env = np.where(on, np.exp(-np.clip(tt, 0, None) / 0.3), 0.0)
+        env = np.where(on, np.exp(-np.clip(tt, 0, None) / tau), 0.0)
         if kind == "hard":   # a pluck with a screwdriver: a click, and overtones up to 4F
             ax[np.argmax(on)] += 20 * amp
             for h, g in ((1, 0.3), (2, r2 * 0.7), (3, 0.5), (4, 0.4)):
                 ax += g * amp * env ** h * np.sin(2 * np.pi * h * fr * tt)
                 ay += g * amp * env ** h * np.sin(2 * np.pi * h * fr * tt + 1.0)
+        elif kind == "harm":   # F, 2F and 4F with set amplitudes
+            for h, g in zip((1, 2, 4), amp):
+                for a, w in zip((ax, ay, az), (0.5, 0.5, 0.4)):
+                    a += w * g * env ** min(h, 2) * np.sin(2 * np.pi * h * fr * tt)
+        elif kind == "ring":
+            for a, w in zip((ax, ay, az), (0.6, 0.6, 0.3)):
+                a += w * amp * env * np.sin(2 * np.pi * fr * tt)
         elif kind == "pluck":
             side = amp * env * np.sin(2 * np.pi * fr * tt)
             along = amp * r2 * env * env * np.sin(4 * np.pi * fr * tt)
@@ -46,6 +56,10 @@ def rec(events, secs=8.0, noise=30.0, fan=None):
             az += 0.4 * side
         else:   # the toolhead ringing by itself after a tap
             ring = amp * np.where(on, np.exp(-np.clip(tt, 0, None) / 0.15), 0.0) * np.sin(2 * np.pi * fr * tt)
+            if r2:   # the belts attached to the toolhead ring a little too: (F, amp F, amp 2F)
+                bf, b1, b2 = r2
+                ring = ring + b1 * env * np.sin(2 * np.pi * bf * tt)
+                ring = ring + b2 * env * env * np.sin(4 * np.pi * bf * tt)
             ax += ring
             az += 0.5 * ring
     return t, ax, ay, az
@@ -104,7 +118,7 @@ def synthetic():
           and any(p["why"] == "the other belt was ringing along" for p in r["plucks"]), r)
     # plucks that disagree: no reading
     r = belts.analyse(*rec(series([86.0, 88.0, 90.0, 92.0, 94.0])), quiet=q)
-    check("plucks 86-94 Hz: inconsistent", r["verdict"] == "spread" and r["freq"] is None, r)
+    check("plucks 86-94 Hz: inconsistent", r["verdict"] in ("spread", "spans") and r["freq"] is None, r)
     # a steady fan line between the tone and twice it
     qf = quiet(fan=137.0)
     r = belts.analyse(*rec(series([91.0] * 5), fan=137.0), quiet=qf)
@@ -125,6 +139,145 @@ def synthetic():
     print("%-4s %-46s %s" % ("ok" if ok else "FAIL", "tap learns 104.5 Hz", tr))
     if not ok:
         FAILS.append("tap")
+    octaves(q)
+    knocks(q)
+    series_rules(q)
+
+
+def near(r, fr, tol=0.4):
+    return r["verdict"] == "good" and r["freq"] is not None and abs(r["freq"] - fr) < tol
+
+
+def octaves(q):
+    """The tone, not twice it or half it."""
+    # a frame mode near F/2 ringing with each pluck, 2F weak (F-strong sensor)
+    for tgt in (110.0, None):
+        ev = series([91.0] * 5, r2=0.12, extra=[(1.0 + 1.2 * i, "ring", 45.6, 1500.0, 0, 0.06) for i in range(5)])
+        r = belts.analyse(*rec(ev), quiet=q, target=tgt)
+        check("frame mode at F/2, target %s" % tgt, near(r, 91.0), r)
+    # a 2F sensor (2F 25 dB over F) with 4F stronger than F
+    for tgt in (110.0, 150.0, None):
+        ev = [(1.0 + 1.2 * i, "harm", 91.0, (60.0, 1070.0, 250.0), 0) for i in range(5)]
+        r = belts.analyse(*rec(ev), quiet=q, target=tgt)
+        check("4F over F on a 2F sensor, target %s" % tgt, near(r, 91.0), r)
+    # a loose belt in the rough phase, heard mostly at 2F: read at its tone, not 2x it
+    ev = [(1.0 + 1.2 * i, "harm", 62.0, (80.0, 1070.0, 0.0), 0) for i in range(5)]
+    r = belts.analyse(*rec(ev), quiet=q, target=110.0)
+    check("loose belt 62 Hz, 2F sensor, target 110", near(r, 62.0), r)
+    # the last reading breaks a tie the ringing can't settle (no timing: pluck_freq alone)
+    f = np.fft.rfftfreq(1 << 15, 1.0 / FS)
+    df = f[1] - f[0]
+    p = np.ones(len(f))
+    for fc, lv in ((45.5, 10.0), (91.0, 10.0 ** 3.5), (182.0, 10.0)):
+        p[np.abs(f - fc) < 0.3] = lv
+    fr = belts.pluck_freq(f, p, np.ones(len(f)), df, 25.0, 700.0, prev=91.0)[0]
+    ok = fr is not None and abs(fr - 91.0) < 0.3
+    print("%-4s %-46s %s" % ("ok" if ok else "FAIL", "tie: the last reading (91) decides", fr))
+    if not ok:
+        FAILS.append("prev tie")
+
+
+def knocks(q):
+    """A knock on the toolhead is not a belt, with or without a tap learned."""
+    # a tool tap on the toolhead (104 Hz, loud) among plucks, nothing learned
+    ev = series([88.0] * 4, extra=[(2.8, "tap", 104.0, 8000.0, 0)])
+    r = belts.analyse(*rec(ev), quiet=q, target=110.0, expect=4)
+    check("loud knock at 104 Hz, no tap learned", near(r, 88.0) and r["used"] == 4
+          and any(p["why"] == "a knock, not a belt" for p in r["plucks"]), r)
+    # a tap that also rings the belt (2F strong, a 2F sensor): only the toolhead is learned
+    tr = belts.analyse_tap(*rec([(1.0, "tap", 104.5, 3000.0, (88.2, 150.0, 450.0))], 3.0), quiet=q)
+    ok = len(tr["modes"]) == 1 and abs(tr["modes"][0] - 104.5) < 0.5
+    print("%-4s %-46s %s" % ("ok" if ok else "FAIL", "tap rings the belt too: learns 104.5 only", tr))
+    if not ok:
+        FAILS.append("tap rings belt")
+    ev = [(1.0 + 1.2 * i, "harm", 88.2, (60.0, 1070.0, 0.0), 0) for i in range(5)]
+    r = belts.analyse(*rec(ev), quiet=q, target=110.0, avoid=tr["modes"])
+    check("then that belt's plucks", near(r, 88.2), r)
+    # a belt whose 2F sits on a learned toolhead mode: the guard is for F only
+    ev = [(1.0 + 1.2 * i, "harm", 81.8, (60.0, 1070.0, 0.0), 0) for i in range(5)]
+    r = belts.analyse(*rec(ev), quiet=q, target=110.0, avoid=[104.5, 163.6])
+    check("belt 2F on a learned mode (163.6)", near(r, 81.8), r)
+    # a bump on the frame before the plucks: PLUCKS=3 still gets its 3 plucks
+    ev = [(0.4, "ring", 41.0, 3000.0, 0, 0.1)] + [(1.2 + 1.2 * i, "pluck", fr, 1000.0, 1.0)
+                                                  for i, fr in enumerate((88.2, 88.0, 88.3))]
+    r = belts.analyse(*rec(ev, 6.0), quiet=q, target=110.0, expect=3)
+    check("bump before 3 plucks, expect=3", near(r, 88.2) and r["used"] == 3, r)
+
+
+def series_rules(q):
+    """Which plucks of a series count."""
+    # a stray removed, and the rest checked again: still too far apart
+    ev = [(1.0 + 1.2 * i, "pluck", fr, 1000.0, 1.0) for i, fr in enumerate((88.0, 88.0, 88.8, 89.7, 92.0))]
+    r = belts.analyse(*rec(ev), quiet=q, target=110.0)
+    check("stray out, the rest checked again", r["freq"] is None and r["verdict"] == "spread", r)
+    # plucks 1 s apart that ring long, no quiet recording and hardly a gap before them
+    ev = [(0.3 + 1.0 * i, "pluck", 88.2, 600.0, 0.5, 1.0) for i in range(5)]
+    r = belts.analyse(*rec(ev, 6.5), target=110.0)
+    check("long ringing 1 s apart, no quiet", near(r, 88.2) and r["used"] == 5, r)
+    # no quiet recording and a fan: the fan stays in the noise, not taken for a belt
+    r = belts.analyse(*rec(series([91.0] * 5, start=0.3), fan=137.0), target=110.0)
+    check("fan at 137 Hz, no quiet", near(r, 91.0), r)
+    # a pluck 22 dB below the loudest is still found and counted
+    r = belts.analyse(*rec(series([88.0] * 5, amps=[3000, 3000, 240, 3000, 3000])), quiet=q, target=110.0)
+    check("one pluck 22 dB softer", near(r, 88.0) and r["heard"] == 5 and r["used"] == 5, r)
+    # like the blind test: good plucks mixed with other stretches of belt (72, 60 Hz),
+    # two knocks on the toolhead and a loud 439 Hz click: no reading
+    kinds = [("pluck", 90.5), ("pluck", 72.0), ("tap", 104.0), ("pluck", 60.0), ("pluck", 90.5),
+             ("ring", 439.0), ("pluck", 72.0), ("pluck", 90.5), ("tap", 104.0), ("pluck", 60.0)]
+    ev = [(1.0 + 1.2 * i, k, fr, 6000.0 if k == "tap" else 1500.0, 0 if k == "tap" else 1.0,
+           0.05 if k == "ring" else 0.3)
+          for i, (k, fr) in enumerate(kinds)]
+    r = belts.analyse(*rec(ev, 14.0), quiet=q, target=110.0)
+    why = [p["why"] for p in r["plucks"]]
+    check("blind test mix: no reading, spans", r["freq"] is None and r["verdict"] == "spans"
+          and why.count("a knock, not a belt") == 2
+          and not any(p["ok"] and p["freq"] > 200 for p in r["plucks"]), r)
+    # most plucks agree: the ones on another stretch are left out
+    kinds = [90.5, 72.0, 90.5, 90.5, 60.0, 90.5]
+    ev = [(1.0 + 1.2 * i, "pluck", fr, 1500.0, 1.0) for i, fr in enumerate(kinds)]
+    r = belts.analyse(*rec(ev), quiet=q, target=110.0)
+    check("4 of 6 agree: 72 and 60 left out", near(r, 90.5) and r["used"] == 4
+          and sum(p["why"].startswith("rang at") for p in r["plucks"]) == 2, r)
+    # all plucks on the same wrong stretch: a reading all the same (the judge can't know)
+    r = belts.analyse(*rec(series([72.0] * 5)), quiet=q, target=110.0)
+    check("5 plucks at 72 Hz: a reading", near(r, 72.0), r)
+
+
+def tensioning():
+    """plan(): a user who turns exactly as told reaches +-0.25 Hz (average of 5 plucks),
+    also on stiff tensioners (many Hz per turn)."""
+    import random
+    for hz_turn in (6.0, 24.0, 40.0):
+        done_runs = 0
+        for seed in range(20):
+            r = random.Random(seed)
+            A, B = 92.0 + r.uniform(-3, 3), 90.0 + r.uniform(-3, 3)
+            b = {"target": 110.0, "tol": 0.25, "plucks": 5, "round": 0, "phase": "coarse"}
+            for _ in range(40):
+                b["A"] = {"freq": round(A + r.gauss(0, 0.1), 1), "used": 5}
+                b["B"] = {"freq": round(B + r.gauss(0, 0.1), 1), "used": 5}
+                adv, upd = belts.plan(b)
+                b.update(upd)
+                if b.get("done"):
+                    done_runs += 1
+                    break
+                last = b.get("last")
+                if last:
+                    turn = last["turns"]
+                elif "Rough" in adv:
+                    turn = (100.0 - min(A, B)) / hz_turn     # coarse: the user turns by ear
+                    last = {"belt": "A" if A < B else "B"}
+                else:
+                    continue
+                own = hz_turn * turn
+                if last["belt"] == "A":
+                    A, B = A + own, B + 0.3 * own
+                else:
+                    B, A = B + own, A + 0.3 * own
+        ok = done_runs >= 18
+        print("%-4s %-46s %d/20 done" % ("ok" if ok else "FAIL", "tension to +-0.25 Hz at %g Hz/turn" % hz_turn, done_runs))
+        if not ok:
+            FAILS.append("tension %g" % hz_turn)
 
 
 def load(path):
@@ -145,10 +298,20 @@ def real(d):
         # tap at 2.81 s of the audio; audio 0 = first sample + 33.68 s
         off = 33.68
         cut = lambda a, b: [x[(t >= a + off) & (t < b + off)] for x in (t, ax, ay, az)]
-        tap = belts.analyse_tap(*cut(2.3, 5.5))
+        def calm(a, b):
+            """(t, ax, ay, az) from a to b, and the stretch before its first event as quiet."""
+            seg = cut(a, b)
+            fs = (len(seg[0]) - 1) / (seg[0][-1] - seg[0][0])
+            on = belts.find_plucks(seg[1:], fs, belts.SEARCH[0], 0.45 * fs / 2.0, None)
+            n = (on[0] - int(0.05 * fs)) if on else 0
+            return seg, ([x[:n] for x in seg[1:]] if n > int(0.5 * fs) else None)
+        seg, q = calm(2.3, 5.5)
+        tap = belts.analyse_tap(*seg, quiet=q)
         avoid = tap["modes"]
-        right = belts.analyse(*cut(5.5, 19.5), avoid=avoid)
-        left = belts.analyse(*cut(23.5, 37.0), avoid=avoid, other=right["freq"])
+        seg, q = calm(5.5, 19.5)
+        right = belts.analyse(*seg, quiet=q, target=110.0, avoid=avoid)
+        seg, q = calm(23.5, 37.0)
+        left = belts.analyse(*seg, quiet=q, target=110.0, avoid=avoid, other=right["freq"])
         print(name, "tap", tap)
         check(name + " right 90.9", right["verdict"] == "good" and abs(right["freq"] - 90.9) < 0.6, right)
         check(name + " left 88.2", left["verdict"] == "good" and abs(left["freq"] - 88.2) < 0.6, left)
@@ -159,6 +322,7 @@ if __name__ == "__main__":
     ap.add_argument("--real", help="folder with the Neb370 plucks2 recordings")
     a = ap.parse_args()
     synthetic()
+    tensioning()
     if a.real:
         real(a.real)
     print("FAILED: " + ", ".join(FAILS) if FAILS else "all passed")

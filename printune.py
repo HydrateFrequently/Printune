@@ -382,11 +382,12 @@ class Printune:
         self.timer = None
         self.gen_timer = None
         self.errors = 0           # counts errors, so the page sees a repeated one
-        self.belt_tol = config.getfloat("belt_tolerance", 2., above=0.)
+        self.belt_tol = config.getfloat("belt_tolerance", 0.25, above=0.)   # Hz, average of 5 plucks
         self.belt_target = config.getfloat("belt_target", 110., minval=20., maxval=400.)
         self.belts = {}           # belt tension session, for the page and the prompts
         self.belt_now = None      # the belt being listened to (the test printer's fake plucks use it)
         self.belt_plucks = 5
+        self.belt_live = []       # plucks heard so far while listening (the page shows them live)
         self._tool_info = None
         self.shaper = {}
         self.graphs = []
@@ -429,6 +430,8 @@ class Printune:
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
                 "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
+                "belt_now": self.belt_now if self.belt_now in ("A", "B") else None,
+                "belt_live": self.belt_live,
                 "shaper": self.shaper, "graphs": self.graphs, "setup": self._setup_status(),
                 "procs": {k: list(v) for k, v in PROCS.items()},
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
@@ -461,7 +464,7 @@ class Printune:
         return self._tool_info
 
     # ---------------- belt tension from plucks ----------------
-    cmd_PRINTUNE_BELTS_START_help = "Printune: start belt tensioning (TARGET=Hz PLUCKS=3|5)"
+    cmd_PRINTUNE_BELTS_START_help = "Printune: start belt tensioning (TARGET=Hz)"
 
     def cmd_PRINTUNE_BELTS_START(self, gcmd):
         if self.printer.lookup_object("resonance_tester", None) is None:
@@ -469,11 +472,12 @@ class Printune:
         if not self._tools()["corexy"]:
             raise gcmd.error("Printune: the belt step is made for CoreXY printers")
         target = gcmd.get_float("TARGET", self.belt_target, minval=20., maxval=400.)
-        plucks = gcmd.get_int("PLUCKS", 5, minval=3, maxval=5)
+        plucks = 5      # on target: the average of 5 good plucks
         self.belt_plucks = plucks
         self.belts = {"target": target, "plucks": plucks, "round": 0, "phase": "coarse",
                       "A": None, "B": None, "heard": [], "advice": "Measure belt A", "done": False,
-                      "tol": self.belt_tol, "tap": [], "fails": {"A": 0, "B": 0}, "deaf": False}
+                      "tol": self.belt_tol, "tap": [], "fails": {"A": 0, "B": 0}, "deaf": False,
+                      "possible": False, "good": {}, "prev": {}}
         gcmd.respond_info("Printune: belt tension, target %.0f Hz, %d plucks per belt" % (target, plucks))
 
     cmd_PRINTUNE_BELT_LISTEN_help = "Printune: record plucks of one belt (BELT=A|B) and find its frequency"
@@ -505,13 +509,18 @@ class Printune:
         toolhead.wait_moves()
         try:
             # a second of background first (fans, motors), so they aren't taken for the belt
+            self.belt_live = []
             self.state, self.message = "listening", "Hands off the printer for a moment"
             quiet = self._record(chip, toolhead, 1.5)
             self.belt_now = belt
-            self.message = "Pluck belt %s %d times, about once a second" % (belt, n)
+            self.message = "Pluck belt %s %d times, evenly, about once a second" % (belt, n)
             if gcmd.get_int("UI", 0):
                 self.gcode.run_script_from_command("_PRINTUNE_BELTS_UI STEP=pluck BELT=%s" % belt)
-            samples = self._record(chip, toolhead, secs)
+            live = dict(quiet=[[s[i] for s in quiet] for i in (1, 2, 3)], expect=n,
+                        avoid=self.belts.get("tap", []), target=self.belts["target"],
+                        prev=(self.belts.get("good") or {}).get(belt),
+                        other=(self.belts.get("B" if belt == "A" else "A") or {}).get("freq"))
+            samples = self._record(chip, toolhead, secs, live=live)
         finally:
             self.belt_now = None
             self.state, self.message = "idle", ""
@@ -522,19 +531,29 @@ class Printune:
         self._save_recording("belt%s-%s" % (belt, stamp), samples)
         t = [s[0] for s in samples]
         other = (self.belts.get("B" if belt == "A" else "A") or {}).get("freq")
+        good = dict(self.belts.get("good") or {})
         res = belts.analyse(t, [s[1] for s in samples], [s[2] for s in samples],
                             [s[3] for s in samples], target=self.belts["target"], expect=n,
                             quiet=[[s[i] for s in quiet] for i in (1, 2, 3)],
-                            avoid=self.belts.get("tap", []), other=other)
+                            avoid=self.belts.get("tap", []), other=other, prev=good.get(belt))
+        self.belt_live = res["plucks"]
         b = dict(self.belts)                 # a new object: status updates send what changed
         b[belt] = res
+        if res["freq"] is not None:
+            b["prev"] = dict(b.get("prev") or {}, **({belt: good[belt]} if belt in good else {}))
+            good[belt] = res["freq"]
+            b["good"] = good
+            b["possible"] = True
         # a sensor that can't hear the belts at all: say so instead of guessing
         fails = dict(b.get("fails") or {"A": 0, "B": 0})
-        fails[belt] = 0 if res["freq"] is not None else fails.get(belt, 0) + 1
+        # a failed series: not one clear pluck in it (plucks that only disagree don't count)
+        clear = any(p["ok"] or p["why"] not in ("no belt tone", "too weak", "a knock, not a belt")
+                    for p in res["plucks"])
+        fails[belt] = 0 if clear else fails.get(belt, 0) + 1
         b["fails"] = fails
         ever = b.get("ever") or res["freq"] is not None
         b["ever"] = ever
-        b["deaf"] = not ever and fails[belt] >= 2 and not any(p["ok"] for p in res["plucks"])
+        b["deaf"] = not ever and fails[belt] >= 2
         heard = set(b.get("heard", [])) - {belt}
         if res["freq"] is not None:
             heard.add(belt)
@@ -613,13 +632,51 @@ class Printune:
     # ---------------- raw recordings, readable from Mainsail (Kalico's own go to /tmp) ----------------
     REC_KEEP = 40
 
-    @staticmethod
-    def _record(chip, toolhead, secs):
+    def _record(self, chip, toolhead, secs, live=None):
+        """Record for secs. live: analyse() arguments; then the plucks heard so far are
+        put in belt_live about once a second while recording (in a thread, so a slow
+        host doesn't hold up Kalico)."""
         client = chip.start_internal_client()
+        timer = None
+        if live is not None:
+            import printune_belts as belts
+            busy = []
+            self._live_gen = gen_now = getattr(self, "_live_gen", 0) + 1
+
+            def work(samples):
+                try:
+                    res = belts.analyse([s[0] for s in samples], [s[1] for s in samples],
+                                        [s[2] for s in samples], [s[3] for s in samples], **live)
+                    if self.belt_now in ("A", "B") and self._live_gen == gen_now:
+                        self.belt_live = res["plucks"]
+                except Exception:
+                    logging.exception("printune: live belt analysis")
+                finally:
+                    busy.clear()
+
+            def tick(eventtime):
+                try:
+                    if not busy:
+                        samples = [s for m in list(client.msgs) for s in m["data"]
+                                   if s[0] >= client.request_start_time]
+                        if len(samples) > 200:
+                            busy.append(1)
+                            threading.Thread(target=work, args=(samples,), daemon=True).start()
+                except Exception:
+                    logging.exception("printune: live belt samples")
+                    return self.reactor.NEVER
+                return eventtime + 1.0
+            timer = self.reactor.register_timer(tick, self.reactor.monotonic() + 1.5)
         try:
             toolhead.dwell(secs)
         finally:
-            client.finish_measurements()     # never leave the chip streaming
+            try:
+                client.finish_measurements()     # never leave the chip streaming
+            finally:
+                # after finish: dwell returns while ~2 s are still queued, keep showing those
+                if timer is not None:
+                    self.reactor.unregister_timer(timer)
+                    self._live_gen += 1          # a late live result can't overwrite the final one
         return client.get_samples()
 
     def _find_chip(self, name):

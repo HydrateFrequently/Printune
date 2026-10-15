@@ -153,6 +153,27 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
 #prompt .pbuttons { display: grid; gap: 10px; margin: 12px 0; }
 #prompt .pgroup { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); margin: 12px 0; }
 #prompt .pgroup button, #prompt .pbuttons button { min-height: 56px; font-weight: 600; }
+/* belt readout: read from arm's length on a phone */
+#beltView { margin: 4px 0 8px; }
+#beltView .live { text-align: center; padding: 10px 0 4px; }
+#beltView .live .hz { font-size: 64px; font-weight: 700; line-height: 1.05; font-variant-numeric: tabular-nums; }
+#beltView .live .hz.out { color: var(--muted); text-decoration: line-through; }
+#beltView .live .sub { color: var(--muted); font-size: 16px; }
+#beltView .chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 8px 0; }
+#beltView .chip { padding: 4px 10px; border-radius: 999px; background: var(--card2); font-variant-numeric: tabular-nums; font-size: 16px; }
+#beltView .chip.ok { background: var(--primary-soft); color: var(--text); }
+#beltView .chip.out { color: var(--muted); text-decoration: line-through; }
+#beltView .belts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+#beltView .belt { background: var(--card2); border-radius: var(--radius); padding: 12px; text-align: center; border: 2px solid transparent; min-width: 0; }
+#beltView .belt.now { border-color: var(--primary); }
+#beltView .belt .name { color: var(--muted); font-size: 15px; }
+#beltView .belt .hz { font-size: 40px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+#beltView .belt .d { font-size: 16px; font-weight: 600; }
+#beltView .belt .d.good { color: var(--ok); }
+#beltView .belt .d.near { color: var(--warn); }
+#beltView .belt .d.far { color: var(--err); }
+#beltView .belt .prev, #beltView .belt .n { color: var(--muted); font-size: 14px; }
+#beltView .diff { text-align: center; color: var(--muted); margin-top: 8px; font-size: 16px; }
 #prompt .pfooter { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 #prompt .pfooter button { flex: 1 1 140px; }
 .disclaimer { font-size: 13px; color: var(--muted); text-align: center; margin: 24px 8px 8px; }
@@ -221,6 +242,7 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
   <!-- Prompt card: shown on top of whatever screen is visible -->
   <section class="card" id="prompt" aria-live="polite" hidden>
     <h2 id="pTitle"></h2>
+    <div id="beltView" aria-live="polite" hidden></div>
     <div id="pBody"></div>
     <div id="pGraphs" hidden></div>
     <div id="pMvs" class="field" hidden style="margin-top:12px">
@@ -1003,8 +1025,80 @@ function renderPrompt() {
   }
   renderResultsExtras();
   renderGraphs();
+  renderBelts();
   // max flow band list: also take a typed height or band number
   show("pMvs", !!prompt && /^(?:Printune|Advanced)[ \d\/]* - Max flow$/.test(prompt.title || ""));
+}
+
+// Belt tension: big numbers on top of the belt prompts, for a phone held at the printer
+let beltBuzz = "";
+function fmtHz(v) { return v == null ? "--" : Number(v).toFixed(1); }
+function renderBelts() {
+  const b = pt().belts || {};
+  const on = !!prompt && /^Printune - (belt|pluck|tap)/i.test(prompt.title || "") && !!b.target;
+  show("beltView", on);
+  if (!on) return;
+  const box = $("beltView");
+  box.textContent = "";
+  const now = pt().belt_now || (/belt (A|B)/i.exec(prompt.title || "") || [])[1] || "";
+  const cur = (now === "A" || now === "B") ? b[now] : null;
+  // the newest pluck of the belt being measured, big
+  const listening = pt().state === "listening" && !!pt().belt_now;
+  const plucks = (listening ? pt().belt_live : cur && cur.plucks) || [];
+  const last = plucks.length ? plucks[plucks.length - 1] : null;
+  const live = el("div", { class: "live" });
+  if (pt().state === "listening") {
+    live.appendChild(el("div", { class: "hz" + (last && !last.ok ? " out" : "") },
+      last && last.freq != null ? fmtHz(last.freq) : "..."));
+    const okN = plucks.filter((p) => p.ok).length;
+    live.appendChild(el("div", { class: "sub" }, listening && plucks.length
+      ? okN + " of " + plucks.length + " counted" + (last && !last.ok ? " (last: " + (last.why || "not counted") + ")" : "")
+      : (pt().message || "Listening")));
+  } else if (cur && cur.freq != null) {
+    live.appendChild(el("div", { class: "hz" }, fmtHz(cur.freq) + " Hz"));
+    live.appendChild(el("div", { class: "sub" }, "Belt " + now + ": " + cur.used + " of " + (cur.heard || plucks.length) + " plucks counted"));
+  } else if (cur) {
+    live.appendChild(el("div", { class: "hz out" }, last && last.freq != null ? fmtHz(last.freq) : "--"));
+    live.appendChild(el("div", { class: "sub" }, "Pluck again"));
+  }
+  if (live.childNodes.length) box.appendChild(live);
+  if (plucks.length) {
+    const chips = el("div", { class: "chips" });
+    for (const p of plucks) {
+      const c = el("span", { class: "chip " + (p.ok ? "ok" : "out") }, p.freq != null ? fmtHz(p.freq) : "x");
+      if (!p.ok && p.why) c.title = p.why;
+      chips.appendChild(c);
+    }
+    box.appendChild(chips);
+  }
+  // a short buzz when a new pluck is counted (phones that can)
+  const sig = now + plucks.filter((p) => p.ok).length + ":" + plucks.length;
+  if (sig !== beltBuzz) {
+    if (beltBuzz && plucks.length && navigator.vibrate) { try { navigator.vibrate(last && last.ok ? 40 : [20, 60, 20]); } catch (e) {} }
+    beltBuzz = sig;
+  }
+  // both belts, with the target and the change since the last round
+  const grid = el("div", { class: "belts" });
+  for (const k of ["A", "B"]) {
+    const r = b[k];
+    const t = el("div", { class: "belt" + (k === now ? " now" : "") });
+    t.appendChild(el("div", { class: "name" }, "Belt " + k));
+    t.appendChild(el("div", { class: "hz" }, r && r.freq != null ? fmtHz(r.freq) : "--"));
+    if (r && r.freq != null) {
+      const d = r.freq - b.target, tol = b.tol || 0.25;
+      const cls = Math.abs(d) <= tol ? "good" : (Math.abs(d) <= 2 ? "near" : "far");
+      t.appendChild(el("div", { class: "d " + cls }, Math.abs(d) <= tol ? "on target"
+        : (d < 0 ? "-" : "+") + Math.abs(d).toFixed(1) + " Hz, " + (d < 0 ? "tighten" : "loosen")));
+      t.appendChild(el("div", { class: "n" }, r.used + " of " + (r.heard || (r.plucks || []).length) + " counted"));
+    }
+    const pv = (b.prev || {})[k];
+    if (pv != null && r && r.freq != null && Math.abs(pv - r.freq) >= 0.1) t.appendChild(el("div", { class: "prev" }, "was " + fmtHz(pv) + " Hz"));
+    grid.appendChild(t);
+  }
+  box.appendChild(grid);
+  const fa = b.A && b.A.freq, fb = b.B && b.B.freq;
+  box.appendChild(el("div", { class: "diff" }, "Target " + Number(b.target).toFixed(0) + " Hz" +
+    (fa != null && fb != null ? "  ·  A-B " + (fa - fb >= 0 ? "+" : "") + (fa - fb).toFixed(1) + " Hz" : "")));
 }
 
 // Shake&Tune graphs made by the last run, under its prompt

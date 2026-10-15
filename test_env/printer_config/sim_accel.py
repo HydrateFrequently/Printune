@@ -75,6 +75,7 @@ class SimClient(adxl345.AccelQueryHelper):
         adxl345.AccelQueryHelper.__init__(self, chip.printer)
         self.chip = chip
         self.moves = {}
+        self.streamed = None      # print time streamed up to while Printune listens
         self.timer = chip.reactor.register_timer(self._pull, chip.reactor.NOW)
         chip.clients.append(self)
         # Printune listening for plucks: pluck the belt it asks for, once a second or so
@@ -93,6 +94,15 @@ class SimClient(adxl345.AccelQueryHelper):
         moves, _ = mr.trapqs["toolhead"].extract_trapq(self.request_start_time - 1.0)
         for m in moves:
             self.moves[m.print_time] = (m.print_time, m.move_t, m.start_v, m.accel, m.x_r, m.y_r, m.z_r)
+        # while Printune listens to a belt, stream what was "measured" so far, like a real chip
+        pt = self.chip.printer.lookup_object("printune", None)
+        if eventtime and not self.is_finished and getattr(pt, "belt_now", None) in ("A", "B"):
+            mcu = self.chip.printer.lookup_object("mcu")
+            now = mcu.estimated_print_time(self.chip.reactor.monotonic())
+            last = self.streamed or self.request_start_time
+            if now > last + 0.5:
+                self.msgs = self.msgs + self._synth(now, last)
+                self.streamed = now
         return eventtime + 1.0
 
     def finish_measurements(self):
@@ -101,9 +111,21 @@ class SimClient(adxl345.AccelQueryHelper):
         self.chip.reactor.unregister_timer(self.timer)
         if self in self.chip.clients:
             self.chip.clients.remove(self)
-        t0, t1 = self.request_start_time, self.request_end_time
-        n = max(2, int((t1 - t0) * RATE))
-        t = t0 + np.arange(n) / RATE
+        if self.streamed:
+            # streamed while listening: add the rest
+            self.msgs = self.msgs + self._synth(self.request_end_time, self.streamed)
+        else:
+            self.msgs = self._synth(self.request_end_time)
+        logging.info("sim_accel: %d samples over %.1f s from %d moves", sum(len(m["data"]) for m in self.msgs),
+                     self.request_end_time - self.request_start_time, len(self.moves))
+
+    def _synth(self, t1, t0=None):
+        """What the chip would have sent from t0 (default: the start) up to print time t1."""
+        start = self.request_start_time
+        t0 = start if t0 is None else t0
+        k0 = int(round((t0 - start) * RATE))
+        n = max(2, int((t1 - start) * RATE) - k0)
+        t = start + (k0 + np.arange(n)) / RATE
         ax, ay, az = np.zeros(n), np.zeros(n), np.zeros(n)
         for pt, mt, v0, acc, xr, yr, zr in sorted(self.moves.values()):
             i0, i1 = np.searchsorted(t, [pt, pt + mt])
@@ -124,16 +146,23 @@ class SimClient(adxl345.AccelQueryHelper):
         # along the belt at twice it (the pull changes twice per swing; either can be
         # the stronger). The knock of the finger rings the frame.
         for pt, belt, freq, amp, h2 in c.plucks:
-            if pt > t1 or pt + 6 * PLUCK_DECAY < t0:
+            if pt > t1 or pt + 6 * PLUCK_DECAY < t[0]:
                 continue
             i0 = int(np.searchsorted(t, pt))
+            # the knock of the finger rings the frame for a second from pt; the part of
+            # it that falls in this stretch (streaming sends it in pieces)
+            j0 = int(round((t[0] - pt) * RATE)) if pt < t[0] else 0
+            knock = np.zeros(int(RATE))
+            knock[:int(0.003 * RATE)] = 4.0 * amp
+
+            def ring(modes):
+                full = sum(m[2] * (base_excited(knock, m[0], m[1]) - knock) for m in modes)
+                return full[j0:j0 + n - i0]
             if belt == "tap":
                 # a finger on the toolhead: only the frame rings
-                knock = np.zeros(min(n - i0, int(RATE)))
-                knock[:int(0.003 * RATE)] = 4.0 * amp
                 for k, modes in ((0, c.x_modes), (1, c.y_modes)):
-                    out[k][i0:i0 + len(knock)] += sum(
-                        m[2] * (base_excited(knock, m[0], m[1]) - knock) for m in modes)
+                    r = ring(modes)
+                    out[k][i0:i0 + len(r)] += r
                 continue
             tt = t[i0:] - pt
             env = np.exp(-tt / PLUCK_DECAY) * np.minimum(1.0, tt / 0.004)
@@ -141,15 +170,12 @@ class SimClient(adxl345.AccelQueryHelper):
             along = amp * h2 * env * env * np.sin(4 * math.pi * freq * tt)
             ux, uy = (0.71, 0.71) if belt == "A" else (0.71, -0.71)     # along the belt
             vx, vy = -uy, ux                                             # across it
-            knock = np.zeros(min(n - i0, int(RATE)))      # the frame rings out within a second
-            knock[:int(0.003 * RATE)] = 4.0 * amp
             for k, (u_, v_, modes) in enumerate(((ux, vx, c.x_modes), (uy, vy, c.y_modes))):
-                frame = sum(m[2] * (base_excited(knock, m[0], m[1]) - knock) for m in modes)
+                frame = ring(modes)
                 out[k][i0:] += u_ * along + 0.5 * v_ * side
-                out[k][i0:i0 + len(knock)] += u_ * frame
+                out[k][i0:i0 + len(frame)] += u_ * frame
             out[2][i0:] += 0.5 * side
-        self.msgs = [{"data": list(zip(t.tolist(), out[0].tolist(), out[1].tolist(), out[2].tolist()))}]
-        logging.info("sim_accel: %d samples over %.1f s from %d moves", n, t1 - t0, len(self.moves))
+        return [{"data": list(zip(t.tolist(), out[0].tolist(), out[1].tolist(), out[2].tolist()))}]
 
 
 class SimAccel:
