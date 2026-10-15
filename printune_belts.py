@@ -418,8 +418,20 @@ def analyse(t, ax, ay, az, target=None, expect=None, quiet=None, avoid=(), other
         pk = {"t": round(float(on / fs), 2), "freq": None if fr is None else round(fr, 2),
               "db": None if d1 is None else round(d1, 1), "db2": None if d2 is None else round(d2, 1),
               "ok": False, "why": ""}
+        if fr is not None and mask is not None and bool(mask(np.array([2 * fr]))[0]):
+            # twice the tone sits on a steady line (a fan, the sensor's own): it can't
+            # be told from the noise there, so the tone alone decides
+            d2 = None
+            pk["db2"] = None
         if fr is None:
             pk["why"] = "no belt tone"
+        elif d2 is None:
+            if d1 < STRONG_DB:
+                pk["why"] = "too weak"
+            elif _knock(f, df, halves, fr, d1, d1, avoid):
+                pk["why"] = "a knock, not a belt"
+            else:
+                pk["ok"] = True
         elif _knock(f, df, halves, fr, d1, d2, avoid):
             pk["why"] = "a knock, not a belt"
         elif max(d1, d2) < STRONG_DB or min(d1, d2) < WEAK_DB:

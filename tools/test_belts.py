@@ -279,7 +279,7 @@ def real(d):
         t, ax, ay, az = load(path)
         t = t - t[0]
         # tap at 2.81 s of the audio; audio 0 = first sample + 33.68 s
-        off = 33.68
+        off = 39.67 if name.startswith("beacon") else 33.68     # the Beacon log starts later
         cut = lambda a, b: [x[(t >= a + off) & (t < b + off)] for x in (t, ax, ay, az)]
         def calm(a, b):
             """(t, ax, ay, az) from a to b, and the stretch before its first event as quiet."""

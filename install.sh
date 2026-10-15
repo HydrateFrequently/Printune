@@ -81,7 +81,7 @@ if [ ! -e "$CONFIG_DIR/printune_settings.cfg" ]; then
 # printer.cfg. A value set in this file can't be saved from the page.
 # Belt tension: starting target (Hz) and how close both belts must get (Hz)
 #belt_target: 110
-#belt_tolerance: 2
+#belt_tolerance: 0.25
 # Other OrcaSlicer settings for the test prints, one "key = value" per line, e.g.
 #orca_settings:
 #    outer_wall_speed = 100
