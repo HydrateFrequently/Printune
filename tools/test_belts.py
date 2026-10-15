@@ -256,7 +256,8 @@ def tensioning():
         b = {"target": 110.0, "tol": 0.25, "plucks": 5, "last_belt": last,
              "A": {"freq": fa, "used": ua}, "B": {"freq": fb, "used": ub}}
         adv, upd = belts.plan(b)
-        ok = want in adv and upd.get("done") == done
+        # "good" and "prev" in the belt state belong to the plugin (last readings)
+        ok = want in adv and upd.get("done") == done and not {"good", "prev"} & set(upd)
         print("%-4s %-46s %s" % ("ok" if ok else "FAIL", "plan %s / %s" % (fa, fb), adv))
         if not ok:
             FAILS.append("plan %s/%s" % (fa, fb))

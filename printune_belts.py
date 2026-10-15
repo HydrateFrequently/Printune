@@ -548,7 +548,7 @@ def plan(b):
     need = b.get("plucks", 5)
     good = {k: abs(f - tgt) <= tol and ((b.get(k) or {}).get("used") or 0) >= need
             for k, f in (("A", fa), ("B", fb))}
-    upd["good"] = good
+    upd["belt_good"] = good
     upd["done"] = good["A"] and good["B"]
     if upd["done"]:
         return "Both belts good. Done.", upd
