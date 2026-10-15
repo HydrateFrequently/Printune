@@ -183,6 +183,24 @@ def fnum(v, digits):
     return s.rstrip("0").rstrip(".") if "." in s else s
 
 
+def pval(preset, key):
+    """One value of an exported preset (Orca writes most of them as one-item lists), as text."""
+    if not isinstance(preset, dict):
+        return ""
+    v = preset.get(key, "")
+    if isinstance(v, list):
+        v = v[0] if v else ""
+    return str(v).strip()
+
+
+def fnum_or(text):
+    """A number from text, else None."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def cstr(v):
     """One Orca string value, quoted C-style."""
     return '"%s"' % str(v).replace("\\", "\\\\").replace('"', '\\"')
@@ -650,12 +668,40 @@ class Printune:
         cfg, opts, mid = self._settings(ftype, tmin, tmax, exc, settings)
         opts["proc"] = proc
         opts["skip"] = ",".join(SKIP_KEY[t] for t in TESTS if t not in tests)
+        reused = []
+        flow_ratio = "1"
         if proc == "advanced":
-            # advanced tuning prints at the temperature the wizard picked for this preset
-            t = self._exported_temp(name)
-            if t and tmin - 30 <= t <= tmax + 30 and t <= heater.max_temp - 5:
-                mid = t
-                cfg["nozzle_temperature"] = cfg["nozzle_temperature_initial_layer"] = str(t)
+            # advanced tuning prints with what the wizard picked for this preset: temperature,
+            # pressure advance, flow ratio and retraction (from its last export)
+            prev = self._exported_preset(name)
+            ptype = pval(prev, "filament_type").upper() if prev else ""
+            if prev and ptype != ftype:
+                new = "%s %s" % (name, ftype)
+                gcmd.respond_info("Printune: the preset \"%s\" is %s, not %s: starting a new preset \"%s\""
+                                  % (name, ptype or "another type", ftype, new))
+                name, prev = new[:40], None
+            if prev:
+                t = fnum_or(pval(prev, "nozzle_temperature"))
+                if t and tmin - 30 <= t <= tmax + 30 and t <= heater.max_temp - 5:
+                    mid = int(t)
+                    cfg["nozzle_temperature"] = cfg["nozzle_temperature_initial_layer"] = str(mid)
+                    reused.append("%d C" % mid)
+                pa = fnum_or(pval(prev, "pressure_advance"))
+                if pval(prev, "enable_pressure_advance") in ("1", "true") and pa is not None:
+                    cfg["enable_pressure_advance"], cfg["pressure_advance"] = "1", fnum(pa, 4)
+                    reused.append("PA %s" % fnum(pa, 4))
+                fr = fnum_or(pval(prev, "filament_flow_ratio"))
+                if fr:
+                    cfg["filament_flow_ratio"] = flow_ratio = fnum(fr, 4)
+                    reused.append("flow ratio %s" % flow_ratio)
+                rl = fnum_or(pval(prev, "filament_retraction_length"))
+                rs = fnum_or(pval(prev, "filament_retraction_speed"))
+                if rl is not None and rs:
+                    ds = fnum_or(pval(prev, "filament_deretraction_speed")) or rs
+                    cfg["retraction_length"] = fnum(rl, 3)
+                    cfg["retraction_speed"], cfg["deretraction_speed"] = fnum(rs, 1), fnum(ds, 1)
+                    opts["set_ret"] = "1"
+                    reused.append("retraction %s mm" % fnum(rl, 2))
         start = []
         if soak:
             start.append("_PRINTUNE_SOAK BED=%d NOZZLE=%d" % (bed, mid))
@@ -665,7 +711,8 @@ class Printune:
         vsd = self.printer.lookup_object("virtual_sdcard")
         gdir = os.path.join(os.path.realpath(vsd.sdcard_dirname), "printune")
         os.makedirs(gdir, exist_ok=True)
-        fname = re.sub(r"[^A-Za-z0-9._()+-]", "_", name) + ".gcode"
+        # its own file: an advanced session must not replace the wizard's
+        fname = re.sub(r"[^A-Za-z0-9._()+-]", "_", name) + ("_advanced" if proc == "advanced" else "") + ".gcode"
         path = os.path.join(gdir, fname)
         args = [sys.executable, os.path.join(HERE, "printune_gen.py"), "-o", path + ".tmp",
                 "--start", "\n".join(start), "--end", self.end_gcode]
@@ -684,7 +731,7 @@ class Printune:
                  "; nozzle_temperature_range_high = %d" % (tmax,)]
         for plate in ("hot_plate_temp", "textured_plate_temp"):
             block += ["; %s = %d" % (plate, bed), "; %s_initial_layer = %d" % (plate, bed)]
-        block += ["; print_flow_ratio = 1", "; filament_flow_ratio = 1",
+        block += ["; print_flow_ratio = 1", "; filament_flow_ratio = " + flow_ratio,
                   "; use_firmware_retraction = " + cfg["use_firmware_retraction"],
                   "; CONFIG_BLOCK_END"]
         log = open(path + ".log", "w")
@@ -700,8 +747,10 @@ class Printune:
         self.pending = (path, block)
         self.state, self.message = "generating", "Preparing the test prints"
         if proc == "advanced":
-            gcmd.respond_info("Printune: preparing advanced tuning for \"%s\" (%s, nozzle %d C, bed %d C)..."
-                              % (name, ftype, mid, bed))
+            gcmd.respond_info("Printune: preparing advanced tuning for \"%s\" (%s, nozzle %d C, bed %d C)%s..."
+                              % (name, ftype, mid, bed,
+                                 ("; from the preset: " + ", ".join(reused)) if reused else
+                                 "; no earlier export of this preset, so the printer's PA, flow and retraction"))
         else:
             gcmd.respond_info("Printune: preparing \"%s\" (%s, %d-%d C, bed %d C)..."
                               % (name, ftype, tmin, tmax, bed))
@@ -767,14 +816,14 @@ class Printune:
             opts["clearance"] = "%g" % (self.toolhead_radius,)
         return cfg, opts, mid
 
-    def _exported_temp(self, name):
-        """Nozzle temperature of an earlier export of this preset (the tower pick), else None."""
+    def _exported_preset(self, name):
+        """The last export of this preset (a dict), else None."""
         fname = re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json"
         try:
             with open(os.path.join(self.out_dir, fname)) as f:
-                v = json.load(f).get("nozzle_temperature", [None])
-            return int(float(v[0] if isinstance(v, list) else v))
-        except (OSError, ValueError, TypeError, IndexError, AttributeError):
+                d = json.load(f)
+            return d if isinstance(d, dict) and d.get("type") == "filament" else None
+        except (OSError, ValueError):
             return None
 
     def _gen_poll(self, eventtime):
@@ -1040,8 +1089,13 @@ class Printune:
         try:
             with open(out) as f:
                 old = json.load(f)
+            same_type = pval(old, "filament_type").upper() == first(cfg, "filament_type").upper()
+            if not same_type:
+                gcmd.respond_info("Printune: %s is a %s preset, this session is %s: writing a new preset"
+                                  % (fname, pval(old, "filament_type") or "different",
+                                     first(cfg, "filament_type")))
             if (isinstance(old, dict) and old.get("type") == "filament" and old.get("name") == name
-                    and "Printune" in str(old.get("filament_notes", ""))):
+                    and same_type and "Printune" in str(old.get("filament_notes", ""))):
                 for k in keys:
                     old[k] = preset[k]
                 preset, merged = old, True

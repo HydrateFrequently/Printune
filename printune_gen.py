@@ -13,9 +13,9 @@ on one bed, each depending on the values picked before it. The Tuning Wizard:
 
 Advanced tuning (option proc=advanced):
 
-  1. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
-  2. Cooling             - overhang blocks, one per fan speed (fan %), then a cone whose layer
+  1. Cooling             - overhang blocks, one per fan speed (fan %), then a cone whose layer
                            time falls with height (minimum layer time)
+  2. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
 
 Between tests the printer pauses and the Printune page (or Mainsail/Fluidd)
 shows one button per tested value. The picked value is applied to every later
@@ -56,8 +56,12 @@ VERSION = 7            # must match variable_version in printune.cfg
 # Every test in print order, and the procedures. A test moves between the Tuning Wizard and
 # Advanced tuning by moving its key between the two lists (the plugin, the menu and the page
 # read them from here).
-ORDER = ("squish", "pa", "em", "ret", "mvs", "cool")
-PROCS = {"wizard": ("squish", "pa", "em", "ret"), "advanced": ("mvs", "cool")}
+# The tallest test (the max flow tower) prints last: the gantry never passes over it.
+ORDER = ("squish", "pa", "em", "ret", "cool", "mvs")
+PROCS = {"wizard": ("squish", "pa", "em", "ret"), "advanced": ("cool", "mvs")}
+# print order of the objects' sections (the gantry rule needs to know what prints first)
+SECTION_RANK = {"patches": 0, "patches_b": 1, "pa": 2, "pa_fine": 3, "em": 4, "em_fine": 5, "ret": 6,
+                "cool": 7, "cone": 8, "mvs": 9}
 SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "mvs": "mvs", "cool": "cool"}
 TITLE_WORD = {"wizard": "Printune", "advanced": "Advanced"}
 MARKER = "PRINTUNE"
@@ -171,7 +175,8 @@ END_GCODE = "PRINT_END"
 
 # Test options (not Orca settings). All can be set on the command line or in the object name.
 OPTIONS = {
-    "proc": "wizard",           # wizard (first layer, PA, flow, retraction) or advanced (max flow, cooling)
+    "proc": "wizard",           # wizard (first layer, PA, flow, retraction) or advanced (cooling, max flow)
+    "set_ret": 0,               # 1: set firmware retraction to the profile's retraction at the start
     "skip": "auto",             # comma list of: patches, pa, em, ret, mvs, cool; auto = the other procedure's
     "patches_extra": 4,         # optional 2nd round of patches (0 = none)
     "pa": "0-0.08/0.005",       # direct drive range
@@ -303,6 +308,8 @@ class Settings:
         o = self.opt
         self.clearance = float(o["clearance"]) or _num(c["extruder_clearance_radius"])
         self.low_ok = float(o["low_ok"])
+        # the X gantry's lower edge is this far above the nozzle tip (Orca's by-object printing)
+        self.rod = _num(c.get("extruder_clearance_height_to_rod", "36")) or 36.0
         self.margin = float(o["margin"])
         self.proc = str(o["proc"]).strip().lower()
         if self.proc not in PROCS:
@@ -1635,18 +1642,20 @@ class Session:
                 labs = [fmt_val(d * 100, 1) for d in self.em_fine]
                 self.em_f = self._place_em(labs, "EM_F", "em_fine", (col_l, by1 - m - hf / 2))
 
-        # retraction towers, the max flow tower, then the cooling blocks and cone (print order).
-        # The max flow tower is placed first, so the retraction towers fit around it; if that puts
-        # a retraction tower on a later plate than it, everything goes in print order instead (a
-        # plate printed earlier must not hold the max flow tower).
+        # retraction towers, cooling blocks and cone, and the max flow tower (printed last). The
+        # tower is placed first, so the others fit around it; if that puts anything printed before
+        # it on a later plate, everything goes in print order instead (a plate printed earlier
+        # must not hold the tower). _fits keeps the gantry off the tower either way.
         saved = [list(p) for p in self.plates]
         self._place_mvs(X, Y)
         self._place_towers(Y)
-        if self.mvs_obj and self.towers and max(o.plate for o in self.towers) > self.mvs_obj.plate:
+        self._place_cool(X, Y)
+        before = self.towers + self.cool_objs + ([self.cone_obj] if self.cone_obj else [])
+        if self.mvs_obj and before and max(o.plate for o in before) > self.mvs_obj.plate:
             self.plates = saved
             self._place_towers(Y)
+            self._place_cool(X, Y)
             self._place_mvs(X, Y)
-        self._place_cool(X, Y)
 
         # extra patches: printed right after the first round, so they only need to stay
         # off the other objects of plate 1 (they are low, the clearance rule doesn't apply)
@@ -1838,6 +1847,12 @@ class Session:
                 # objects printed one at a time keep the toolhead clear of each other too
                 if tall and (p.section != o.section or o.section in ("ret", "cool")) and box_dist(o.box, p.box) < R:
                     return False
+                # the X gantry spans the bed at the nozzle's Y: whatever prints later must stay
+                # out of the Y band (plus the toolhead radius) of anything taller than the rod height
+                first, later = (p, o) if SECTION_RANK.get(p.section, 0) <= SECTION_RANK.get(o.section, 0) else (o, p)
+                if (first.height > s.rod and later.box[1] < first.box[3] + R
+                        and later.box[3] > first.box[1] - R):
+                    return False
         return True
 
     def _place_pa(self, vals, labels, pref, name, section, setter):
@@ -1944,10 +1959,15 @@ class Session:
         g("G92 E0")
         # PA=-1: Orca does not set PA, so keep whatever the printer has now
         T = self.titles()
+        set_ret = int(float(s.opt["set_ret"])) and s.fw_retract
         g("_PRINTUNE_BEGIN VERSION=%d PA=%s EM=%.4f FW=%d PFR=%.4f STEPS=%s PROC=%s" % (
             VERSION, fmt_val(s.pa_profile, 4) if s.pa_enabled else "-1", s.em_profile,
             1 if s.fw_retract else 0, _num(s.cfg.get("print_flow_ratio", "1")) or 1.0,
             ",".join(self.steps), self.proc_word))
+        if set_ret:
+            # advanced tuning: the retraction the wizard picked (the session puts yours back at the end)
+            g("SET_RETRACTION RETRACT_LENGTH=%s RETRACT_SPEED=%s UNRETRACT_EXTRA_LENGTH=0 UNRETRACT_SPEED=%s" % (
+                fmt_val(s.ret_len, 3), fmt_val(s.ret_speed, 1), fmt_val(s.unret_speed, 1)))
         wr.set_accel(s.a_travel)
         wr.retracted = False
         wr.z = 0.0
@@ -2035,19 +2055,6 @@ class Session:
                 # pick the retraction (and tower temperature) now: the later tests print at it
                 self._cp(wr, self._ret_cp() + " NEXT=%s" % ",".join(nxt))
 
-        # ---- max volumetric flow ----
-        if self.mvs_obj:
-            g("; ----- MAX VOLUMETRIC FLOW tower -----")
-            g("M117 %s max flow" % T["mvs"])
-            # the picks so far go into the preset now, so a cancel during the tower keeps them
-            g("_PRINTUNE_SAVEPOINT")
-            self._plate(wr, [self.mvs_obj], skip=[self.mvs_obj.name], what="mvs")
-            self._mvs(wr, self.mvs_obj)
-            nxt = self._next_names("mvs")
-            if nxt:
-                # pick the flow now, then ask about the next test
-                self._cp(wr, self._mvs_cp() + " NEXT=%s" % ",".join(nxt))
-
         # ---- cooling: fan from the overhang blocks, minimum layer time from the cone ----
         if self.cone_obj:
             c = self.cool
@@ -2071,6 +2078,19 @@ class Session:
             nxt = self._next_names("cool")
             if nxt:
                 self._cp(wr, self._cool_cp() + " NEXT=%s" % ",".join(nxt))
+
+        # ---- max volumetric flow ----
+        if self.mvs_obj:
+            g("; ----- MAX VOLUMETRIC FLOW tower -----")
+            g("M117 %s max flow" % T["mvs"])
+            # the picks so far go into the preset now, so a cancel during the tower keeps them
+            g("_PRINTUNE_SAVEPOINT")
+            self._plate(wr, [self.mvs_obj], skip=[self.mvs_obj.name], what="mvs")
+            self._mvs(wr, self.mvs_obj)
+            nxt = self._next_names("mvs")
+            if nxt:
+                # pick the flow now, then ask about the next test
+                self._cp(wr, self._mvs_cp() + " NEXT=%s" % ",".join(nxt))
 
         self._park(wr)
         g("_PRINTUNE_END")

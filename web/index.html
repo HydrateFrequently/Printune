@@ -405,10 +405,10 @@ const TESTS = [
     desc: "Smooth top surfaces: not too much, not too little plastic." },
   { key: "ret", label: "Retraction & temperature", stage: "Retraction",
     desc: "Towers that show which settings string the least." },
-  { key: "mvs", label: "Max volumetric flow", stage: "Max flow",
-    desc: "A thin tower printed faster and faster: how much plastic the hotend can melt." },
   { key: "cool", label: "Cooling (fan & layer time)", stage: "Cooling",
     desc: "Overhang blocks pick one steady fan %; a cone shows the shortest layer time." },
+  { key: "mvs", label: "Max volumetric flow", stage: "Max flow",
+    desc: "A thin tower printed faster and faster: how much plastic the hotend can melt." },
 ];
 const SUBSCRIBE = {
   print_stats: null, display_status: null, virtual_sdcard: null, pause_resume: null, idle_timeout: null,
@@ -863,7 +863,7 @@ function makeStepper(name, opts) {
 }
 
 // ---------- form ----------
-const DEFAULT_PROCS = { wizard: ["squish", "pa", "em", "ret"], advanced: ["mvs", "cool"] };
+const DEFAULT_PROCS = { wizard: ["squish", "pa", "em", "ret"], advanced: ["cool", "mvs"] };
 function procs() {
   const p = pt().procs;
   return p && Array.isArray(p.wizard) && Array.isArray(p.advanced) ? p : DEFAULT_PROCS;

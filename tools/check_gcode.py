@@ -5,7 +5,10 @@ Simulates the moves (G90 XY/Z, M83 E) and reports:
   * moves outside the bed, extrusion widths per object family
   * nozzle crashes: a travel passing through something already printed
   * extrusions laid onto another object (an uncleared plate)
+  * gantry: the X gantry spans the bed at the nozzle's Y; a move whose Y band (+-margin) holds
+    printed material more than the rod height above the nozzle tip runs the gantry into it
   --skip=cool,cone,mvs simulates pressing "Skip" at those plate pauses
+  --rod=36 (Orca's extruder_clearance_height_to_rod), --margin=10 (mm either side of the nozzle's Y)
   * toolhead clearance: the tallest printed thing (above the nozzle tip) within
     radius r of the nozzle, for every move, binned by r
   * filament and a rough time estimate
@@ -84,7 +87,7 @@ def family(name):
     return re.sub(r"\d+$", "", name).rstrip("_")
 
 
-def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=()):
+def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), rod=36.0, margin=10.0):
     segs, oob = parse(path, h1, h, bed=bed, skip=skip)
     if skip:
         print("simulated: Skip pressed at the plate pause for %s" % ",".join(skip))
@@ -104,6 +107,9 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=()):
     nx, ny = int(400 / RES), int(400 / RES)
     H = np.zeros((nx, ny), np.float32)
     O = np.zeros((nx, ny), np.int32)    # which object printed the top of each cell
+    Hy = np.zeros(ny, np.float32)        # tallest material in each row of Y (what the gantry meets)
+    gantry, gworst = 0, (-99.0, None)
+    gm = int(margin / RES)
     oid = {}
     onto = []   # extrusions laid onto another object's material
     crash = []
@@ -121,9 +127,18 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=()):
         if trav == 2:
             H[:] = 0.0      # plate cleared
             O[:] = 0
+            Hy[:] = 0.0
             continue
         L = math.hypot(x1 - x0, y1 - y0)
         steps = max(1, int(L / 2.0))
+        # gantry: the tallest material in the Y band the move covers, above the nozzle tip
+        j0 = max(0, int(min(y0, y1) / RES) - gm)
+        j1 = min(ny, int(max(y0, y1) / RES) + gm + 1)
+        over = float(Hy[j0:j1].max()) - z
+        if over > gworst[0]:
+            gworst = (over, (round(x1, 1), round(y1, 1), round(z, 2), ob))
+        if over > rod:
+            gantry += 1
         # clearance: sample along the move (cheap: endpoints + every 2 mm, every 10th seg for long prints)
         if n % 3 == 0 or trav:
             for k in range(0, steps + 1, max(1, steps // 4)):
@@ -172,9 +187,12 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=()):
         sub = H[ia:ib, ja:jb]
         sub[m] = np.maximum(sub[m], z)
         O[ia:ib, ja:jb][m] = me
+        Hy[ja:jb] = np.maximum(Hy[ja:jb], z)
     print("extrusions onto another object: %d" % len(onto))
     for c in onto[:10]:
         print("  ", c)
+    print("gantry over prints taller than the rod height (%g mm): %d moves; worst %+.2f mm above the nozzle at %s"
+          % (rod, gantry, gworst[0], gworst[1]))
     print("nozzle crashes on travels: %d" % len(crash))
     for c in crash[:10]:
         print("  ", c)
@@ -192,9 +210,10 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=()):
 
 
 if __name__ == "__main__":
-    # check_gcode.py FILE [R] [W,D] [--skip cool,cone,mvs]
-    args = [a for a in sys.argv[1:] if not a.startswith("--skip")]
-    sk = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--skip=")]
-    skip = tuple(sk[0].split(",")) if sk else ()
+    # check_gcode.py FILE [R] [W,D] [--skip=cool,cone,mvs] [--rod=36] [--margin=10]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    kw = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+    skip = tuple(kw["skip"].split(",")) if kw.get("skip") else ()
     bed = (0, 0) + tuple(float(v) for v in args[2].split(",")) if len(args) > 2 else (0, 0, 375, 388)
-    main(args[0], float(args[1]) if len(args) > 1 else 45.0, bed=bed, skip=skip)
+    main(args[0], float(args[1]) if len(args) > 1 else 45.0, bed=bed, skip=skip,
+         rod=float(kw.get("rod", 36)), margin=float(kw.get("margin", 10)))
