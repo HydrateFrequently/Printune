@@ -1056,7 +1056,7 @@ function renderBelts() {
       : (pt().message || "Listening")));
   } else if (cur && cur.freq != null) {
     live.appendChild(el("div", { class: "hz" }, fmtHz(cur.freq) + " Hz"));
-    live.appendChild(el("div", { class: "sub" }, (now === (pt().belt_left || "A") ? "Left" : "Right") + " belt: " + cur.used + " of " + (cur.heard || plucks.length) + " plucks counted"));
+    live.appendChild(el("div", { class: "sub" }, "Belt " + now + ": " + cur.used + " of " + (cur.heard || plucks.length) + " plucks counted"));
   } else if (cur) {
     live.appendChild(el("div", { class: "hz out" }, last && last.freq != null ? fmtHz(last.freq) : "--"));
     live.appendChild(el("div", { class: "sub" }, "Pluck again"));
@@ -1082,8 +1082,7 @@ function renderBelts() {
   for (const k of ["A", "B"]) {
     const r = b[k];
     const t = el("div", { class: "belt" + (k === now ? " now" : "") });
-    const side = k === (pt().belt_left || "A") ? "Left" : "Right";
-    t.appendChild(el("div", { class: "name" }, side + " belt (" + k + ")"));
+    t.appendChild(el("div", { class: "name" }, "Belt " + k));
     t.appendChild(el("div", { class: "hz" }, r && r.freq != null ? fmtHz(r.freq) : "--"));
     if (r && r.freq != null) {
       const d = r.freq - b.target, tol = b.tol || 0.25;
@@ -1100,7 +1099,7 @@ function renderBelts() {
   box.appendChild(grid);
   const fa = b.A && b.A.freq, fb = b.B && b.B.freq;
   box.appendChild(el("div", { class: "diff" }, "Target " + Number(b.target).toFixed(0) + " Hz" +
-    (fa != null && fb != null ? "  ·  A-B " + (fa - fb >= 0 ? "+" : "") + (fa - fb).toFixed(1) + " Hz" : "")));
+    (fa != null && fb != null ? "  ·  difference " + Math.abs(fa - fb).toFixed(1) + " Hz" : "")));
 }
 
 // Shake&Tune graphs made by the last run, under its prompt

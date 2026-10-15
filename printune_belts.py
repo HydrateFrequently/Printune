@@ -536,7 +536,9 @@ def analyse_tap(t, ax, ay, az, quiet=None):
 
 def plan(b):
     """What to tell the user after both belts were measured. b is the belt state
-    (target, tol, A, B, last: the belt changed last); returns (advice, updates for b).
+    (target, tol, A, B = belt A and B (the user picks which is which), last_belt: the one changed last); returns
+    (advice, updates for b). Which belt is which doesn't matter: they are tensioned
+    equally.
     Just which way, and one belt per round, taking turns, so the two are brought up
     together and never end far apart."""
     tgt, tol = b["target"], b["tol"]
@@ -562,9 +564,9 @@ def plan(b):
     elif last in ("A", "B"):
         k = "B" if last == "A" else "A"
     else:
-        k = b.get("left", "A")         # the left belt first
+        k = "A"                        # belt A first
     f = fa if k == "A" else fb
     upd["last_belt"] = k
-    side = "left" if k == b.get("left", "A") else "right"
-    return "%s the %s (%s) belt a little: %.1f Hz %s. Then measure both again" % (
-        "Tighten" if f < tgt else "Loosen", side, k, abs(f - tgt), "low" if f < tgt else "high"), upd
+    return "%s belt %s a little: %.1f Hz %s. Then measure both again" % (
+        "Tighten" if f < tgt else "Loosen", k, abs(f - tgt),
+        "low" if f < tgt else "high"), upd

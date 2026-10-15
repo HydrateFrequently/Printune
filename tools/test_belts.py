@@ -245,11 +245,11 @@ def series_rules(q):
 
 def tensioning():
     """plan(): just which way, and done only from 5 good plucks each within tol."""
-    cases = [((105.0, 110.1, 5, 5, None), "Tighten the left (A) belt", False),
-             ((110.3, 112.0, 5, 5, None), "Loosen the left (A) belt", False),
-             ((110.3, 112.0, 5, 5, "A"), "Loosen the right (B) belt", False),          # taking turns
-             ((110.3, 112.0, 5, 5, "B"), "Loosen the left (A) belt", False),
-             ((110.1, 112.0, 5, 5, "B"), "Loosen the right (B) belt", False),          # A is good already
+    cases = [((105.0, 110.1, 5, 5, None), "Tighten belt A", False),
+             ((110.3, 112.0, 5, 5, None), "Loosen belt A", False),
+             ((110.3, 112.0, 5, 5, "A"), "Loosen belt B", False),          # taking turns
+             ((110.3, 112.0, 5, 5, "B"), "Loosen belt A", False),
+             ((110.1, 112.0, 5, 5, "B"), "Loosen belt B", False),          # A is good already
              ((110.2, 109.8, 5, 5, None), "Both belts good", True),
              ((110.2, 109.8, 5, 4, None), "not from 5 good plucks", False)]
     for (fa, fb, ua, ub, last), want, done in cases:

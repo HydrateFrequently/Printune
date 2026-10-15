@@ -384,8 +384,6 @@ class Printune:
         self.errors = 0           # counts errors, so the page sees a repeated one
         self.belt_tol = config.getfloat("belt_tolerance", 0.25, above=0.)   # Hz, average of 5 plucks
         self.belt_target = config.getfloat("belt_target", 110., minval=20., maxval=400.)
-        # which CoreXY belt is the left one (measured first; Printune takes turns from it)
-        self.belt_left = config.getchoice("belt_left", {"A": "A", "B": "B"}, "A")
         self.belts = {}           # belt tension session, for the page and the prompts
         self.belt_now = None      # the belt being listened to (the test printer's fake plucks use it)
         self.belt_plucks = 5
@@ -431,7 +429,7 @@ class Printune:
                 "last_proc_rel": self.last_proc_rel, "state": self.state, "message": self.message,
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
-                "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target, "belt_tol": self.belt_tol, "belt_left": self.belt_left,
+                "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target, "belt_tol": self.belt_tol,
                 "belt_now": self.belt_now if self.belt_now in ("A", "B") else None,
                 "belt_live": self.belt_live,
                 "shaper": self.shaper, "graphs": self.graphs, "setup": self._setup_status(),
@@ -477,8 +475,8 @@ class Printune:
         plucks = 5      # on target: the average of 5 good plucks
         self.belt_plucks = plucks
         self.belts = {"target": target, "plucks": plucks, "round": 0,
-                      "A": None, "B": None, "heard": [], "advice": "Measure the left belt", "done": False,
-                      "tol": self.belt_tol, "left": self.belt_left, "tap": [], "fails": {"A": 0, "B": 0}, "deaf": False,
+                      "A": None, "B": None, "heard": [], "advice": "Measure belt A", "done": False,
+                      "tol": self.belt_tol, "tap": [], "fails": {"A": 0, "B": 0}, "deaf": False,
                       "possible": False, "good": {}, "prev": {}}
         gcmd.respond_info("Printune: belt tension, target %.0f Hz, %d plucks per belt" % (target, plucks))
 
