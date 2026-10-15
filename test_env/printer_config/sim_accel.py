@@ -6,6 +6,9 @@
 # MEASURE_AXES_NOISE, ACCELEROMETER_MEASURE and Shake&Tune then find the resonances
 # set here.
 #
+# While Printune listens for a tap on the toolhead, the toolhead is tapped once by
+# itself: only the frame resonances ring.
+#
 # Belts: SIM_PLUCK BELT=A|B plucks a belt (a decaying tone at the belt's frequency,
 # along that belt's diagonal). While Printune listens for plucks, the belt it asks for
 # is plucked by itself, as many times as it asks. SIM_BELTS A=110 B=105 sets the belt
@@ -77,7 +80,10 @@ class SimClient(adxl345.AccelQueryHelper):
         # Printune listening for plucks: pluck the belt it asks for, once a second or so
         pt = chip.printer.lookup_object("printune", None)
         belt = getattr(pt, "belt_now", None)
-        if belt in ("A", "B"):
+        if belt == "tap":
+            chip.plucks.append((self.request_start_time + 1.0 + random.uniform(-0.2, 0.2), "tap", 0.0,
+                                PLUCK_ACCEL, 0.0))
+        elif belt in ("A", "B"):
             n = getattr(pt, "belt_plucks", 5)
             for i in range(n):
                 chip.pluck(belt, self.request_start_time + 0.8 + 1.2 * i + random.uniform(-0.15, 0.15))
@@ -121,6 +127,14 @@ class SimClient(adxl345.AccelQueryHelper):
             if pt > t1 or pt + 6 * PLUCK_DECAY < t0:
                 continue
             i0 = int(np.searchsorted(t, pt))
+            if belt == "tap":
+                # a finger on the toolhead: only the frame rings
+                knock = np.zeros(min(n - i0, int(RATE)))
+                knock[:int(0.003 * RATE)] = 4.0 * amp
+                for k, modes in ((0, c.x_modes), (1, c.y_modes)):
+                    out[k][i0:i0 + len(knock)] += sum(
+                        m[2] * (base_excited(knock, m[0], m[1]) - knock) for m in modes)
+                continue
             tt = t[i0:] - pt
             env = np.exp(-tt / PLUCK_DECAY) * np.minimum(1.0, tt / 0.004)
             side = amp * env * np.sin(2 * math.pi * freq * tt)

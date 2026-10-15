@@ -408,6 +408,8 @@ class Printune:
         gcode.register_command(
             "_PRINTUNE_BELT_LISTEN", self.cmd_PRINTUNE_BELT_LISTEN, desc=self.cmd_PRINTUNE_BELT_LISTEN_help)
         gcode.register_command(
+            "_PRINTUNE_BELT_TAP", self.cmd_PRINTUNE_BELT_TAP, desc=self.cmd_PRINTUNE_BELT_TAP_help)
+        gcode.register_command(
             "PRINTUNE_RECORD", self.cmd_PRINTUNE_RECORD, desc=self.cmd_PRINTUNE_RECORD_help)
         gcode.register_command(
             "_PRINTUNE_SHAPER_RUN", self.cmd_PRINTUNE_SHAPER_RUN, desc=self.cmd_PRINTUNE_SHAPER_RUN_help)
@@ -471,7 +473,7 @@ class Printune:
         self.belt_plucks = plucks
         self.belts = {"target": target, "plucks": plucks, "round": 0, "phase": "coarse",
                       "A": None, "B": None, "heard": [], "advice": "Measure belt A", "done": False,
-                      "tol": self.belt_tol}
+                      "tol": self.belt_tol, "tap": [], "fails": {"A": 0, "B": 0}, "deaf": False}
         gcmd.respond_info("Printune: belt tension, target %.0f Hz, %d plucks per belt" % (target, plucks))
 
     cmd_PRINTUNE_BELT_LISTEN_help = "Printune: record plucks of one belt (BELT=A|B) and find its frequency"
@@ -519,11 +521,20 @@ class Printune:
         self._save_recording("belt%s-%s-quiet" % (belt, stamp), quiet)
         self._save_recording("belt%s-%s" % (belt, stamp), samples)
         t = [s[0] for s in samples]
+        other = (self.belts.get("B" if belt == "A" else "A") or {}).get("freq")
         res = belts.analyse(t, [s[1] for s in samples], [s[2] for s in samples],
                             [s[3] for s in samples], target=self.belts["target"], expect=n,
-                            quiet=[[s[i] for s in quiet] for i in (1, 2, 3)])
+                            quiet=[[s[i] for s in quiet] for i in (1, 2, 3)],
+                            avoid=self.belts.get("tap", []), other=other)
         b = dict(self.belts)                 # a new object: status updates send what changed
         b[belt] = res
+        # a sensor that can't hear the belts at all: say so instead of guessing
+        fails = dict(b.get("fails") or {"A": 0, "B": 0})
+        fails[belt] = 0 if res["freq"] is not None else fails.get(belt, 0) + 1
+        b["fails"] = fails
+        ever = b.get("ever") or res["freq"] is not None
+        b["ever"] = ever
+        b["deaf"] = not ever and fails[belt] >= 2 and not any(p["ok"] for p in res["plucks"])
         heard = set(b.get("heard", [])) - {belt}
         if res["freq"] is not None:
             heard.add(belt)
@@ -540,11 +551,64 @@ class Printune:
                            else "Now measure belt %s" % other)
         b["heard"] = heard
         self.belts = b
+        for p in res["plucks"]:
+            if not p["ok"]:
+                gcmd.respond_info("Printune: belt %s, pluck at %.1f s left out: %s" % (belt, p["t"], p["why"]))
         if res["freq"] is None:
             gcmd.respond_info("Printune: belt %s: %s" % (belt, res["note"]))
         else:
-            gcmd.respond_info("Printune: belt %s: %.1f Hz (average of %d plucks)%s" % (
-                belt, res["freq"], res["used"], (" - " + res["note"]) if res["note"] else ""))
+            gcmd.respond_info("Printune: belt %s: %.1f Hz (%s)" % (belt, res["freq"], res["note"]))
+
+    cmd_PRINTUNE_BELT_TAP_help = ("Printune: learn how the toolhead rings by itself from one light tap, "
+                                  "so a tap is never taken for a belt")
+
+    def cmd_PRINTUNE_BELT_TAP(self, gcmd):
+        try:
+            self._belt_tap(gcmd)
+        except Exception:
+            if gcmd.get_int("UI", 0):
+                self.gcode.respond_raw("// action:prompt_end")
+            raise
+
+    def _belt_tap(self, gcmd):
+        import printune_belts as belts
+        if not self.belts:
+            raise gcmd.error("Printune: run _PRINTUNE_BELTS_START first")
+        rt = self.printer.lookup_object("resonance_tester")
+        chips = getattr(rt, "accel_chips", None) or []
+        if not chips:
+            raise gcmd.error("Printune: no accelerometer found")
+        chip = chips[0][1]
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.wait_moves()
+        try:
+            self.state, self.message = "listening", "Hands off the printer for a moment"
+            quiet = self._record(chip, toolhead, 1.5)
+            self.belt_now = "tap"
+            self.message = "Tap the toolhead once, lightly"
+            if gcmd.get_int("UI", 0):
+                self.gcode.run_script_from_command("_PRINTUNE_BELTS_UI STEP=tapnow")
+            samples = self._record(chip, toolhead, 3.0)
+        finally:
+            self.belt_now = None
+            self.state, self.message = "idle", ""
+        if not samples:
+            raise gcmd.error("Printune: the accelerometer sent no data")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._save_recording("tap-%s-quiet" % stamp, quiet)
+        self._save_recording("tap-%s" % stamp, samples)
+        res = belts.analyse_tap([s[0] for s in samples], [s[1] for s in samples],
+                                [s[2] for s in samples], [s[3] for s in samples],
+                                quiet=[[s[i] for s in quiet] for i in (1, 2, 3)])
+        b = dict(self.belts)
+        b["tap"] = res["modes"]
+        b["tap_note"] = res["note"]
+        self.belts = b
+        if res["modes"]:
+            gcmd.respond_info("Printune: the toolhead rings by itself at %s Hz; ignored when listening to the belts"
+                              % ", ".join("%.1f" % m for m in res["modes"]))
+        else:
+            gcmd.respond_info("Printune: tap: %s" % res["note"])
 
     # ---------------- raw recordings, readable from Mainsail (Kalico's own go to /tmp) ----------------
     REC_KEEP = 40
