@@ -1056,7 +1056,7 @@ function renderBelts() {
       : (pt().message || "Listening")));
   } else if (cur && cur.freq != null) {
     live.appendChild(el("div", { class: "hz" }, fmtHz(cur.freq) + " Hz"));
-    live.appendChild(el("div", { class: "sub" }, "Belt " + now + ": " + cur.used + " of " + (cur.heard || plucks.length) + " plucks counted"));
+    live.appendChild(el("div", { class: "sub" }, (now === (pt().belt_left || "A") ? "Left" : "Right") + " belt: " + cur.used + " of " + (cur.heard || plucks.length) + " plucks counted"));
   } else if (cur) {
     live.appendChild(el("div", { class: "hz out" }, last && last.freq != null ? fmtHz(last.freq) : "--"));
     live.appendChild(el("div", { class: "sub" }, "Pluck again"));
@@ -1082,12 +1082,14 @@ function renderBelts() {
   for (const k of ["A", "B"]) {
     const r = b[k];
     const t = el("div", { class: "belt" + (k === now ? " now" : "") });
-    t.appendChild(el("div", { class: "name" }, "Belt " + k));
+    const side = k === (pt().belt_left || "A") ? "Left" : "Right";
+    t.appendChild(el("div", { class: "name" }, side + " belt (" + k + ")"));
     t.appendChild(el("div", { class: "hz" }, r && r.freq != null ? fmtHz(r.freq) : "--"));
     if (r && r.freq != null) {
       const d = r.freq - b.target, tol = b.tol || 0.25;
       const cls = Math.abs(d) <= tol ? "good" : (Math.abs(d) <= 2 ? "near" : "far");
-      t.appendChild(el("div", { class: "d " + cls }, Math.abs(d) <= tol ? "on target"
+      const good = Math.abs(d) <= tol && r.used >= (b.plucks || 5);
+      t.appendChild(el("div", { class: "d " + cls }, Math.abs(d) <= tol ? (good ? "Belt good" : "on target")
         : (d < 0 ? "-" : "+") + Math.abs(d).toFixed(1) + " Hz, " + (d < 0 ? "tighten" : "loosen")));
       t.appendChild(el("div", { class: "n" }, r.used + " of " + (r.heard || (r.plucks || []).length) + " counted"));
     }

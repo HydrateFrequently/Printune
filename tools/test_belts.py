@@ -245,12 +245,15 @@ def series_rules(q):
 
 def tensioning():
     """plan(): just which way, and done only from 5 good plucks each within tol."""
-    cases = [((105.0, 110.1, 5, 5), "Tighten belt A, then", False),
-             ((110.3, 112.0, 5, 5), "Loosen belt A and loosen belt B", False),
-             ((110.2, 109.8, 5, 5), "Both belts are on target", True),
-             ((110.2, 109.8, 5, 4), "not from 5 good plucks", False)]
-    for (fa, fb, ua, ub), want, done in cases:
-        b = {"target": 110.0, "tol": 0.25, "plucks": 5,
+    cases = [((105.0, 110.1, 5, 5, None), "Tighten the left (A) belt", False),
+             ((110.3, 112.0, 5, 5, None), "Loosen the left (A) belt", False),
+             ((110.3, 112.0, 5, 5, "A"), "Loosen the right (B) belt", False),          # taking turns
+             ((110.3, 112.0, 5, 5, "B"), "Loosen the left (A) belt", False),
+             ((110.1, 112.0, 5, 5, "B"), "Loosen the right (B) belt", False),          # A is good already
+             ((110.2, 109.8, 5, 5, None), "Both belts good", True),
+             ((110.2, 109.8, 5, 4, None), "not from 5 good plucks", False)]
+    for (fa, fb, ua, ub, last), want, done in cases:
+        b = {"target": 110.0, "tol": 0.25, "plucks": 5, "last_belt": last,
              "A": {"freq": fa, "used": ua}, "B": {"freq": fb, "used": ub}}
         adv, upd = belts.plan(b)
         ok = want in adv and upd.get("done") == done

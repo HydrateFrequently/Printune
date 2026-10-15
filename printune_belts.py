@@ -536,8 +536,9 @@ def analyse_tap(t, ax, ay, az, quiet=None):
 
 def plan(b):
     """What to tell the user after both belts were measured. b is the belt state
-    (target, tol, A, B); returns (advice, updates for b). Just the numbers and which
-    way: the user reads them and tightens or loosens."""
+    (target, tol, A, B, last: the belt changed last); returns (advice, updates for b).
+    Just which way, and one belt per round, taking turns, so the two are brought up
+    together and never end far apart."""
     tgt, tol = b["target"], b["tol"]
     fa = (b.get("A") or {}).get("freq")
     fb = (b.get("B") or {}).get("freq")
@@ -545,14 +546,25 @@ def plan(b):
     if fa is None or fb is None:
         return "", upd
     need = b.get("plucks", 5)
-    full = all(((b.get(k) or {}).get("used") or 0) >= need for k in ("A", "B"))
-    on = [abs(f - tgt) <= tol for f in (fa, fb)]
-    upd["done"] = all(on) and full
+    good = {k: abs(f - tgt) <= tol and ((b.get(k) or {}).get("used") or 0) >= need
+            for k, f in (("A", fa), ("B", fb))}
+    upd["good"] = good
+    upd["done"] = good["A"] and good["B"]
     if upd["done"]:
-        return "Both belts are on target. Done.", upd
-    if all(on):
+        return "Both belts good. Done.", upd
+    off = [k for k, f in (("A", fa), ("B", fb)) if abs(f - tgt) > tol]
+    if not off:
         return "On target, but not from %d good plucks each: measure both again" % need, upd
-    todo = ["%s belt %s" % ("tighten" if f < tgt else "loosen", k)
-            for k, f, o in (("A", fa, on[0]), ("B", fb, on[1])) if not o]
-    adv = " and ".join(todo)
-    return adv[0].upper() + adv[1:] + ", then measure both again", upd
+    last = b.get("last_belt")
+    # take turns: the belt not changed last, if it still needs it
+    if len(off) == 1:
+        k = off[0]
+    elif last in ("A", "B"):
+        k = "B" if last == "A" else "A"
+    else:
+        k = b.get("left", "A")         # the left belt first
+    f = fa if k == "A" else fb
+    upd["last_belt"] = k
+    side = "left" if k == b.get("left", "A") else "right"
+    return "%s the %s (%s) belt a little: %.1f Hz %s. Then measure both again" % (
+        "Tighten" if f < tgt else "Loosen", side, k, abs(f - tgt), "low" if f < tgt else "high"), upd
