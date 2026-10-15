@@ -10,6 +10,7 @@ on one bed, each depending on the values picked before it:
   2. Pressure advance    - a row of frames, one per PA value (+ optional fine pass)
   3. Flow (extrusion multiplier) - 30x30x3 mm cubes (+ optional 0.5 % fine pass)
   4. Retraction          - towers at several temperatures, printed one at a time
+  5. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
 
 Between tests the printer pauses and the Printune page (or Mainsail/Fluidd)
 shows one button per tested value. The picked value is applied to every later
@@ -106,11 +107,16 @@ DEFAULTS = {
     "extruder_clearance_radius": "65",
     "extruder_clearance_height_to_rod": "36",
     "gcode_flavor": "klipper",
+    "machine_max_speed_x": "500",
+    "machine_max_speed_y": "500",
+    "machine_max_acceleration_x": "20000",
+    "machine_max_acceleration_y": "20000",
 }
 
 # Filament types for the on-printer wizard: starting points, not tuned values.
 # t = nozzle range to test (°C), bed (°C), fan (%), vol = max volumetric speed (mm3/s),
-# soak = wants a heat-soaked enclosure, parent = Orca system preset the result inherits.
+# soak = wants a heat-soaked enclosure, parent = Orca system preset the result inherits,
+# mvs = max flow tower range when it differs from OPTIONS["mvs"].
 FILAMENTS = {
     "PLA":  dict(t=(200, 220), bed=60,  fan=100, vol=15, soak=0, parent="Generic PLA @System"),
     "PETG": dict(t=(230, 250), bed=80,  fan=40,  vol=12, soak=0, parent="Generic PETG @System"),
@@ -118,7 +124,8 @@ FILAMENTS = {
     "ASA":  dict(t=(250, 270), bed=100, fan=20,  vol=20, soak=1, parent="Generic ASA @System"),
     "PC":   dict(t=(260, 280), bed=110, fan=0,   vol=15, soak=1, parent="Generic PC @System"),
     "PA":   dict(t=(250, 270), bed=80,  fan=0,   vol=12, soak=1, parent="Generic PA @System"),
-    "TPU":  dict(t=(220, 240), bed=50,  fan=60,  vol=4,  soak=0, parent="Generic TPU @System"),
+    "TPU":  dict(t=(220, 240), bed=50,  fan=60,  vol=4,  soak=0, parent="Generic TPU @System",
+                mvs="1-12/0.5"),
 }
 
 
@@ -146,7 +153,7 @@ END_GCODE = "PRINT_END"
 
 # Test options (not Orca settings). All can be set on the command line or in the object name.
 OPTIONS = {
-    "skip": "",                 # comma list of: patches, pa, em, ret
+    "skip": "",                 # comma list of: patches, pa, em, ret, mvs
     "patches_extra": 4,         # optional 2nd round of patches (0 = none)
     "pa": "0-0.08/0.005",       # direct drive range
     "pa_fine": "0.005/0.001",   # +-range/step around the pick, 0 = no fine pass
@@ -161,6 +168,9 @@ OPTIONS = {
     "ret_fan": 0,               # 0 = max(fan_max_speed, 80)
     "em_fan": 0,                # 0 = fan_max_speed
     "pa_fan": 0,                # 0 = fan_max_speed
+    "mvs": "5-30/1",            # max volumetric flow tower: flow per band, mm3/s
+    "mvs_band": 3.0,            # height of each flow band, mm
+    "mvs_fan": 0,               # 0 = fan_max_speed
     "clearance": 0,             # toolhead radius for the collision check, 0 = Orca extruder_clearance_radius
     "low_ok": 1.2,              # objects lower than this may sit under the toolhead
     "margin": 12.0,             # keep-out from the printable-area edge
@@ -215,6 +225,9 @@ class Settings:
         self.v_top = _num(c["top_surface_speed"])
         self.v_travel = _num(c["travel_speed"])
         self.mvs = _num(c["filament_max_volumetric_speed"]) or 1e9
+        # the printer's own limits (the plugin sets them from [printer])
+        self.vmax = min(_num(c["machine_max_speed_x"]), _num(c["machine_max_speed_y"])) or 1e9
+        self.amax = min(_num(c["machine_max_acceleration_x"]), _num(c["machine_max_acceleration_y"])) or 1e9
 
         a0 = _num(c["default_acceleration"])
         self.a_default = a0
@@ -407,7 +420,7 @@ class Writer:
     def area(w, h):
         return (w - h) * h + math.pi * (h / 2) ** 2
 
-    def line(self, x, y, w, h, v, accel=None, kind="ext"):
+    def line(self, x, y, w, h, v, accel=None, kind="ext", cap=True):
         self.unlift()
         self.unretract()
         if accel:
@@ -416,7 +429,8 @@ class Writer:
         if L < 1e-6:
             return
         a = self.area(w, h)
-        v = min(v, self.s.mvs / a)
+        if cap:
+            v = min(v, self.s.mvs / a)
         e = L * a / self.s.fil_area
         self.e_total += e
         self.g("G1 X%.3f Y%.3f E%.5f F%d" % (x, y, e, v * 60))
@@ -424,6 +438,17 @@ class Writer:
         self.paths.append((self.x, self.y, x, y, self.z, w, kind))
         self.x, self.y = x, y
         self.max_h = max(self.max_h, self.z)
+
+    def spiral(self, x, y, z, a, v, scale=1.0, kind="mvs", w=0.0):
+        """Extrude to (x, y, z) at v mm/s with cross-section a mm2, no flow cap (max flow test)."""
+        L = math.hypot(x - self.x, y - self.y)
+        e = L * a * scale / self.s.fil_area
+        self.e_total += e
+        self.g("G1 X%.3f Y%.3f Z%.4f E%.5f F%d" % (x, y, z, e, round(v * 60)))
+        self.t_total += L / v          # one continuous move at constant speed
+        self.paths.append((self.x, self.y, x, y, z, w, kind))
+        self.x, self.y, self.z = x, y, z
+        self.max_h = max(self.max_h, z)
 
     def polyline(self, pts, w, h, v, accel=None, kind="ext", closed=False):
         pts = list(pts)
@@ -891,6 +916,81 @@ def disc_fill(wr, s, cx, cy, r_edge, h, angle):
         wr.line(*pts[1], w, h, v, a, "solid")
 
 
+# ---- 5. Max volumetric flow tower ----------------------------------------------
+# A single-wall spiral (vase-style, Z rises continuously) round tower on a square
+# base. The flow steps up in bands of fixed height; speed = flow / line cross-section.
+# A small outward bump at the front marks each band that crosses a multiple of 5 mm3/s.
+MVS_R = 30.0            # wall centre-line radius, mm (60 mm tower)
+MVS_BASE = 3.0          # the square base reaches this far past the wall, mm
+MVS_H_RATIO = 0.75      # layer height / nozzle (0.30 mm on a 0.4 nozzle)
+MVS_W_RATIO = 1.5       # line width / nozzle (0.60 mm on a 0.4 nozzle)
+MVS_BUMP = 0.8          # marker bump, mm outward
+MVS_BUMP_L = 12.0       # marker arc length, mm
+MVS_BUMP_REVS = 3       # marker height, revolutions
+MVS_MARK_DEG = 270.0    # markers face the front (-Y)
+MVS_START_DEG = 90.0    # the spiral starts at the back
+MVS_SEG_DEG = 2.0       # one segment per 2 degrees (chord error < 0.005 mm)
+TYPICAL_H, TYPICAL_W = 0.2, 0.45   # "typical" print line for the mm/s equivalent
+
+
+class MVSTower:
+    def __init__(self, s, flows, band_h):
+        self.s = s
+        self.h = round(MVS_H_RATIO * s.nozzle, 3)
+        self.w = round(MVS_W_RATIO * s.nozzle, 3)
+        self.area = Writer.area(self.w, self.h)
+        self.base_h = s.h1 + (BASE_LAYERS - 1) * s.h
+        self.band_h = band_h
+        self.flows = flows
+        self.top = self.base_h + len(flows) * band_h
+
+    def marks(self):
+        """Band indexes whose flow passes a multiple of 5 mm3/s (the first band has none)."""
+        f = self.flows
+        return {i for i in range(1, len(f)) if math.floor(f[i] / 5.0 + 1e-6) > math.floor(f[i - 1] / 5.0 + 1e-6)}
+
+    def accel(self):
+        """Enough acceleration to hold the top speed around the circle (v^2/r), within the printer's limit."""
+        s = self.s
+        need = 1.15 * (self.flows[-1] / self.area) ** 2 / MVS_R
+        return min(s.amax, max(s.a_outer, need)), need
+
+    def _radius(self, deg, zrel_band, band, marks):
+        if band not in marks or zrel_band >= MVS_BUMP_REVS * self.h:
+            return MVS_R
+        d = ((deg - MVS_MARK_DEG + 180.0) % 360.0 - 180.0) * math.pi / 180.0 * MVS_R
+        if abs(d) >= MVS_BUMP_L / 2:
+            return MVS_R
+        return MVS_R + MVS_BUMP * (1 + math.cos(2 * math.pi * d / MVS_BUMP_L)) / 2
+
+    def draw(self, wr, cx, cy):
+        h, nb = self.h, len(self.flows)
+        marks = self.marks()
+        per_rev = int(round(360.0 / MVS_SEG_DEG))
+        n = int(round((self.top - self.base_h) / h * per_rev))
+        pt = lambda deg, r: (cx + r * math.cos(math.radians(deg)), cy + r * math.sin(math.radians(deg)))
+        x, y = pt(MVS_START_DEG, MVS_R)
+        wr.travel(x, y, force=True)
+        wr.z_to(self.base_h)
+        wr.unretract()
+        wr.set_accel(self.accel()[0])      # after the travel, which uses the travel acceleration
+        for k in range(1, n + 1):
+            revs = k / float(per_rev)
+            z = self.base_h + revs * h
+            zm = self.base_h + (k - 0.5) / per_rev * h      # the segment's middle decides its band
+            band = min(int((zm - self.base_h) / self.band_h), nb - 1)
+            deg = MVS_START_DEG + 360.0 * revs
+            r = self._radius(deg % 360.0, zm - self.base_h - band * self.band_h, band, marks)
+            # first revolution: the gap under the nozzle grows from 0 to h, so does the flow
+            scale = min(1.0, (k - 0.5) / per_rev)
+            wr.spiral(*pt(deg, r), z, self.area, self.flows[band] / self.area, scale, w=self.w)
+        # one flat revolution at the top, flow tapering to 0, for a level top edge
+        for k in range(1, per_rev + 1):
+            deg = MVS_START_DEG + 360.0 * (n / float(per_rev) + k / float(per_rev))
+            wr.spiral(*pt(deg, MVS_R), self.top, self.area, self.flows[-1] / self.area,
+                      1.0 - (k - 0.5) / per_rev, w=self.w)
+
+
 # --------------------------------------------------------------------------
 # Session
 # --------------------------------------------------------------------------
@@ -916,8 +1016,37 @@ class Session:
         self.ret_vals = opt("ret", parse_range)
         temps = o["temps"] or "%d,%d,%d" % (s.t_nozzle + 10, s.t_nozzle, s.t_nozzle - 10)
         self.temps = [int(round(t)) for t in opt("temps", parse_range, temps)]
-        self.objs = []
         self.warn = []
+        self.mvs = None
+        if "mvs" not in s.skip:
+            flows = opt("mvs", parse_range)
+            try:
+                band = float(o["mvs_band"])
+            except ValueError:
+                raise SystemExit("Printune: can't read mvs_band=%s" % o["mvs_band"])
+            tw = MVSTower(s, flows, band)
+            # the printer's max_velocity caps the flow: clamp the top bands to what it reaches
+            fmax = math.floor(s.vmax * tw.area * 10 + 1e-6) / 10.0
+            if flows[-1] > fmax + 1e-9:
+                flows = [f for f in flows if f < fmax - 1e-9] + [fmax]
+                self.warn.append("max flow test: %s mm3/s needs %.0f mm/s, above max_velocity (%.0f mm/s); "
+                                 "the top band prints at %s mm3/s" % (fmt_val(tw.flows[-1], 2),
+                                                                     tw.flows[-1] / tw.area, s.vmax,
+                                                                     fmt_val(fmax, 1)))
+            # lower bands when the tower would be too tall for the printer
+            room = s.max_z - 5 - tw.base_h
+            if len(flows) * band > room:
+                band = math.floor(room / len(flows) * 10) / 10.0
+                if band < 1.5:
+                    raise SystemExit("Printune: the max flow tower is too tall for this printer: "
+                                     "use fewer flow steps")
+                self.warn.append("max flow test: %.1f mm bands to fit the printer's height" % band)
+            self.mvs = MVSTower(s, flows, band)
+            a, need = self.mvs.accel()
+            if need > a + 1:
+                self.warn.append("max flow test: the top band needs %.0f mm/s2 to hold its speed around the "
+                                 "tower, above max_accel (%.0f); Kalico slows it down there" % (need, s.amax))
+        self.objs = []
         self.t_print = int(round(s.t_nozzle))
         self.t_first = int(round(s.t_first))
 
@@ -1021,6 +1150,20 @@ class Session:
                     raise SystemExit("Printune: a retraction tower does not fit on this bed "
                                      "(too few rings for its height, or the bed is too small)")
                 self.towers += got
+
+        # max flow tower: last test, anywhere it fits (prefers the middle)
+        self.mvs_obj = None
+        if self.mvs:
+            hb = MVS_R + MVS_BASE
+
+            def build(cx, cy):
+                ob = Obj("MVS", (cx - hb, cy - hb - 7, cx + hb, cy + hb), self.mvs.top, "mvs")
+                ob.c = (cx, cy)
+                return [ob]
+            got = self._place([(build, (X(0.5), Y(0.5)))])
+            if not got:
+                raise SystemExit("Printune: the max flow tower does not fit on this bed")
+            self.mvs_obj = got[0]
 
         # extra patches: printed right after the first round, so they only need to stay
         # off the other objects of plate 1 (they are low, the clearance rule doesn't apply)
@@ -1254,8 +1397,8 @@ class Session:
         # ---- 1. patches ----
         if self.patches:
             g("; ----- 1. FIRST LAYER SQUISH -----")
-            g("M117 Printune 1/4 first layer - babystep now")
-            g("RESPOND MSG=\"Printune 1/4: first-layer patches. Babystep Z while they print.\"")
+            g("M117 Printune 1/5 first layer - babystep now")
+            g("RESPOND MSG=\"Printune 1/5: first-layer patches. Babystep Z while they print.\"")
             wr.fan(0)
             first = self.patches[0]
             wr.safe_travel(first.box[0], first.box[1] + 1)
@@ -1277,7 +1420,7 @@ class Session:
         # ---- 2. PA ----
         if self.pa_objs:
             g("; ----- 2. PRESSURE ADVANCE -----")
-            g("M117 Printune 2/4 pressure advance")
+            g("M117 Printune 2/5 pressure advance")
             self._plate(wr, self.pa_objs)
             g("M109 S%d" % self.t_print)
             fan = float(s.opt["pa_fan"]) or s.fan_max
@@ -1300,7 +1443,7 @@ class Session:
         # ---- 3. EM ----
         if self.em_c:
             g("; ----- 3. FLOW (EXTRUSION MULTIPLIER) -----")
-            g("M117 Printune 3/4 extrusion multiplier")
+            g("M117 Printune 3/5 extrusion multiplier")
             g("M109 S%d" % self.t_print)
             g("_PRINTUNE_APPLY")
             self._plate(wr, self.em_c)
@@ -1319,7 +1462,7 @@ class Session:
         # ---- 4. retraction ----
         if self.towers:
             g("; ----- 4. RETRACTION towers, one at a time, hottest first -----")
-            g("M117 Printune 4/4 retraction")
+            g("M117 Printune 4/5 retraction")
             # retraction tuning is optional; also the moment to brush the nozzle clean
             self._cp(wr, "_PRINTUNE_CP STEP=ret_ask SKIP=%s" % ",".join(o.name for o in self.towers))
             g("_PRINTUNE_APPLY")
@@ -1329,16 +1472,70 @@ class Session:
                 self._plate(wr, [o])
                 self._tower(wr, o, fan)
             wr.ret_macro = False
+            if self.mvs_obj:
+                # pick the retraction (and tower temperature) now: the flow tower prints at it
+                self._cp(wr, self._ret_cp() + " NEXT=1")
+
+        # ---- 5. max volumetric flow ----
+        if self.mvs_obj:
+            g("; ----- 5. MAX VOLUMETRIC FLOW tower -----")
+            g("M117 Printune 5/5 max flow")
+            self._plate(wr, [self.mvs_obj])
+            self._mvs(wr, self.mvs_obj)
         self._park(wr)
         g("_PRINTUNE_END")
-        if self.towers:
-            g("_PRINTUNE_CP STEP=ret ALL=%s TEMPS=%s RINGS=%s" % (",".join(o.name for o in self.towers),
-                                                              ",".join(str(t) for t in self.temps),
-                                                              ",".join(fmt_val(v, 3) for v in self.ret_vals)))
+        if self.mvs_obj:
+            m = self.mvs
+            g("_PRINTUNE_CP STEP=mvs OBJ=%s FLOWS=%s BASE=%.3f BAND=%.3f" % (
+                self.mvs_obj.name, ",".join(fmt_val(f, 2) for f in m.flows), m.base_h, m.band_h))
+        elif self.towers:
+            g(self._ret_cp())
         else:
             g("_PRINTUNE_CP STEP=summary")
         g("; ===== Printune session end =====")
         return wr
+
+    def _ret_cp(self):
+        return "_PRINTUNE_CP STEP=ret ALL=%s TEMPS=%s RINGS=%s" % (
+            ",".join(o.name for o in self.towers), ",".join(str(t) for t in self.temps),
+            ",".join(fmt_val(v, 3) for v in self.ret_vals))
+
+    def _mvs(self, wr, o):
+        s, m = self.s, self.mvs
+        cx, cy = o.c
+        hb = MVS_R + MVS_BASE
+        self._park(wr)
+        # at the picked tower temperature if there was one, else the print temperature
+        wr.g("_PRINTUNE_MVS_TEMP OBJ=%s S=%d" % (o.name, self.t_print))
+        wr.safe_travel(o.box[0] + 1, o.box[1] + 1)
+        obj_start(wr, o)
+        wr.fan(0)
+        prime_line(wr, s, o.box[0] + 1, o.box[1] + 1, 2 * hb - 2)
+        fan = float(s.opt["mvs_fan"]) or s.fan_max
+        bx0, by0, bx1, by1 = cx - hb, cy - hb, cx + hb, cy + hb
+        for li in range(BASE_LAYERS):
+            h = s.h1 if li == 0 else s.h
+            if li == s.fan_off_layers:
+                wr.fan(fan)
+            wr.z_to(s.h1 + li * s.h)
+            loops, edge = walls_rect(s, bx0, by0, bx1, by1, s.wall_loops, h, li == 0)
+            print_walls(wr, s, loops, h)
+            w = s.w_first if li == 0 else s.w_solid
+            v = s.v_first_infill if li == 0 else s.v_solid
+            a = s.a_first if li == 0 else s.a_solid
+            print_fill(wr, s, bx0, by0, bx1, by1, edge, w, h, v, a, spacing(w, h),
+                       45 if li % 2 == 0 else -45, s.ov_solid, "solid")
+        if s.fan_off_layers >= BASE_LAYERS:
+            wr.fan(fan)
+        # the label flow is the real flow: no speed or flow override, no flow cap, no layer-time slow-down
+        wr.g("M220 S100")
+        wr.g("M221 S100")
+        wr.g("; max flow bands: %s mm3/s, %.2f mm each from Z %.2f" % (
+            ", ".join(fmt_val(f, 2) for f in m.flows), m.band_h, m.base_h))
+        m.draw(wr, cx, cy)
+        wr.retract()
+        obj_end(wr, o)
+        wr.g("_PRINTUNE_APPLY")
 
     def _park(self, wr):
         bx0, by0, bx1, by1 = self.s.bed
@@ -1479,13 +1676,14 @@ class Session:
              "; DISCLAIMER: generated G-code, provided as is without any warranty. Use it at your own",
              "; risk; the authors take no responsibility for any damage. Watch the print.",
              "; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.",
-             "; Order: squish -> PA -> EM -> retraction. Picks are applied to every later test.",
+             "; Order: squish -> PA -> EM -> retraction -> max flow. Picks are applied to every later test.",
              "; PA values: %s" % ", ".join(fmt_val(v) for v in self.pa_vals),
              "; PA fine offsets: %s" % ", ".join(fmt_val(v, 5) for v in self.pa_fine),
              "; EM values: %s" % ", ".join("%.3f" % v for v in self.em_vals),
              "; EM fine offsets: %s" % ", ".join(fmt_val(v, 5) for v in self.em_fine),
              "; Retraction rings: %s mm @ %s mm/s, temps %s" % (", ".join(fmt_val(v, 3) for v in self.ret_vals),
                                                               s.opt["ret_speed"], ", ".join(map(str, self.temps))),
+             "; Max flow bands: %s" % (", ".join(fmt_val(f, 2) for f in self.mvs.flows) if self.mvs else "-"),
              "; Firmware retraction: %s, z-hop %.2f, toolhead clearance radius %.0f mm" % (
                  s.fw_retract, s.z_hop, s.clearance)]
         if s.h1 < 0.25 or s.w_first < 1.2 * s.nozzle:

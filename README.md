@@ -3,7 +3,7 @@
 Filament tuning for Kalico printers, made for people who just want to press a button. Printune prints the tuning tests on your printer, asks you to pick the best one after each test (on your phone, in Mainsail or Fluidd), and writes the results into an **OrcaSlicer filament preset** you import with two clicks.
 
 - **One big blue button: Tuning Wizard.** Pick the filament type, give it a name, check the temperature range from the box, press Start. Printune builds the test prints for your printer, heat-soaks if you want, and walks you through every test.
-- **Or one test only:** first layer, pressure advance, flow, or retraction and temperature.
+- **Or one test only:** first layer, pressure advance, flow, retraction and temperature, or max volumetric flow.
 - **The printer too, in the right order:** belt tension first (pluck each belt; the toolhead accelerometer hears it), then the filament, then the input shaper. Printune runs Kalico's own shaper calibration and, if installed, Shake&Tune's graphs. Steps whose tools are missing are greyed out and link to where to get them.
 - **Works on a phone.** The Printune page is made for a phone next to the printer, and works on a desktop and on small touch screens with a browser.
 - **Results go into the slicer, not the firmware.** Pressure advance, flow ratio, retraction and temperature are per filament, so they belong in the filament preset. The printer's own values are back when the session ends, so swapping filament can never leave a stale value behind.
@@ -13,7 +13,7 @@ Filament tuning for Kalico printers, made for people who just want to press a bu
 | Firmware | Kalico (mainline Klipper may work but is not tested), Moonraker, Mainsail or Fluidd |
 | Printer config | `[exclude_object]`, `[pause_resume]`, `[respond]`, `[virtual_sdcard]` (Mainsail's and Fluidd's standard configs have most of them) |
 | Slicer | OrcaSlicer 2.x for the preset (tested with 2.4.2) |
-| Session | all tests: about 2 h 10 min of printing plus heating and your decision time, about 17 m of filament |
+| Session | all tests: about 2 h 25 min of printing plus heating and your decision time, about 21 m of filament |
 | Licence | GPL-3.0-or-later |
 
 > **Use at your own risk.** Printune generates G-code for your printer. We take no responsibility for that G-code or what it does; see [Disclaimer](#disclaimer).
@@ -78,8 +78,11 @@ They run in this order because each one needs the picks before it. The heat soak
 | 2 | Pressure advance | a row of small hollow frames, one per value (0–0.08 in 0.005 steps). Each long edge prints slow, fast, slow, so a wrong PA shows as a bulge or gap where the speed changes. Values are printed under the frames | the frame with the most even edges; then an optional fine pass in 0.001 steps | Filament › Pressure advance (Enable ticked) |
 | 3 | Flow | 30×30×3 mm cubes at −4 … +4 % flow, numbered | the smoothest top surface; then an optional fine pass in 0.5 % steps | Filament › Flow ratio |
 | 4 | Retraction and temperature | up to 4 towers across your temperature range, hottest first, each with rings at 0–1.0 mm retraction | the cleanest tower, then the ring 1–2 above where stringing stops | Filament › Nozzle temperature and retraction (below) |
+| 5 | Max volumetric flow | a 60 mm round tower, one wall, printed as one spiral. The flow rises 1 mm³/s every 3 mm of height (5–30 mm³/s; TPU 1–12 in 0.5 steps). A small bump on the front marks every 5 mm³/s. Printed at the tower temperature you picked, with the filament's normal fan | the height (or band) where the wall first gets rough or weak. Printune shows the flow there and proposes 90 % of it, which you can adjust. It also shows the same limit in mm/s at a 0.2 mm layer and 0.45 mm line | Filament › Max volumetric speed |
 
-Hands-on tools (on the page under *Hands-on tools*, no print): extruder calibration (`rotation_distance`, a printer setting that stays in printer.cfg) and a max volumetric flow test.
+The max flow tower uses 0.75 × nozzle layers and 1.5 × nozzle lines (0.30 × 0.60 mm on a 0.4 nozzle), so 30 mm³/s is 187 mm/s. Speed is flow ÷ the line's cross-section, (w − h)·h + π(h/2)², the same as Orca. Nothing slows it down: no minimum layer time, no flow cap, speed and flow overrides set to 100 %. If your `max_velocity` can't reach the top of the range, the top band is clamped to what it reaches and Printune warns. A max volumetric speed in Orca is just this flow converted: at a 0.2 mm layer and 0.45 mm line, 1 mm³/s is about 12 mm/s.
+
+Hands-on tools (on the page under *Hands-on tools*, no print): extruder calibration (`rotation_distance`, a printer setting that stays in printer.cfg) and a quick max flow check that extrudes into the air.
 
 Where each result goes if you type it in by hand:
 
@@ -105,6 +108,7 @@ Where each result goes if you type it in by hand:
 | `soak_rate` | `0.5` | the soak is done when the sensor rises less than this (°C) in 5 minutes |
 | `pa_range` | `0-0.08/0.005` | direct drive; a bowden needs a longer range, e.g. `0-1.0/0.05` |
 | `ret_range` | `0-1.0/0.1` | retraction rings (mm); bowden e.g. `0-4/0.4` |
+| `mvs_range` | `5-30/1` (TPU `1-12/0.5`) | max flow tower bands (mm³/s), bottom to top |
 | `toolhead_radius` | `65` | mm the layout keeps clear of finished prints. A small toolhead (Voron V0: about 35) fits more tests on one plate |
 | `orca_settings` | | other Orca settings for the test prints, one `key = value` per line (speeds, accelerations, line widths) |
 | `path` | `config/printune_exports` | where the Orca presets are written |
@@ -123,7 +127,7 @@ You can also slice the session in Orca with your own process profile, so the tes
 2. Turn on **Label objects**. Put `Printune.stl` on an empty plate, slice and print. Options go in the object name, e.g. `Printune pa=0-0.06/0.005 temps=255,245,235 skip=patches` (`_` works instead of `/`).
 3. The exported preset is then a copy of the filament preset you sliced with plus your picks, named "<preset> (Printune)".
 
-Options: `skip` (`patches,pa,em,ret`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, `ret_speed`, `temps`, `patches_extra`, `em_infill`, `em_size`, `em_height`, `clearance`. Orca only runs the script on export or upload, and not with *Use 3MF instead of G-code* switched on.
+Options: `skip` (`patches,pa,em,ret,mvs`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, `ret_speed`, `temps`, `patches_extra`, `em_infill`, `em_size`, `em_height`, `mvs` (max flow range, e.g. `mvs=5-30_1`), `mvs_band` (band height, mm), `clearance`. Orca only runs the script on export or upload, and not with *Use 3MF instead of G-code* switched on.
 
 ## Disclaimer
 
@@ -133,7 +137,7 @@ Options: `skip` (`patches,pa,em,ret`), `pa`, `pa_fine`, `em`, `em_fine`, `ret`, 
 
 - **Z offset.** The squish test uses live babystepping. Whether `Z_OFFSET_APPLY_PROBE` stores it depends on your probe; with a contact-mode probe, or a start macro that sets its own offset, save it the way your setup expects.
 - **Toolhead clearance.** The layout keeps travel away from finished prints using a 65 mm toolhead radius (`toolhead_radius`). The PA frames are under 1 mm tall and may sit closer.
-- **Small beds (down to 120×120 mm).** Printune fits what it can on one plate and uses a coarser pressure advance step (the fine pass fills in). When the next test doesn't fit, the printer pauses with **Clear the plate**: take the prints off (keep them to compare), press continue, and the session goes on with the printer still hot. With every optional pass, the whole wizard needs one plate from about 300 mm, two at 250 mm, three or four at 220–235 mm, and seven on a Voron V0 with `toolhead_radius: 35` (eight with the default 65). Skipped passes need no plate change. Each single test fits on one 120×120 plate, except that the fine passes, the extra first-layer patches and a third retraction tower may need another.
+- **Small beds (down to 120×120 mm).** Printune fits what it can on one plate and uses a coarser pressure advance step (the fine pass fills in). When the next test doesn't fit, the printer pauses with **Clear the plate**: take the prints off (keep them to compare), press continue, and the session goes on with the printer still hot. The max flow tower is tall, so it usually needs a plate of its own after the other tests (one more **Clear the plate** pause). Without it, and with every optional pass, the wizard needs one plate from about 300 mm, two at 250 mm, three or four at 220–235 mm, and seven on a Voron V0 with `toolhead_radius: 35` (eight with the default 65). Skipped passes need no plate change. Each single test fits on one 120×120 plate, except that the fine passes, the extra first-layer patches and a third retraction tower may need another.
 - **Login.** The page uses Moonraker's API like Mainsail does. On a printer with `force_logins`, add your phone's network to `trusted_clients`.
 - **Not tried yet:** importing the preset with the Orca app's File menu (tested with the Orca 2.4.2 command line), KlipperScreen (it can't show web pages), mainline Klipper.
 - **During a pause** the toolhead parks above the prints at the back of the bed. Don't babystep while paused.

@@ -14,7 +14,7 @@
 # it was sliced with, including the filament preset's name and its parent.
 # _PRINTUNE_EXPORT reads that block from the session file, takes the filament
 # settings, puts the picked values on top (flow ratio, pressure advance,
-# retraction, nozzle temperature) and writes one JSON file that Orca imports
+# retraction, nozzle temperature, max volumetric speed) and writes one JSON file that Orca imports
 # with File > Import > Import Configs. It always writes a new preset,
 # "<filament> (Printune)", so it never replaces one of your own presets.
 # A session made by the wizard carries a small block of its own with the name you
@@ -189,8 +189,8 @@ def cstr(v):
 
 # what the user may type for a name: also safe in G-code parameters and file names
 NAME_RE = re.compile(r"[^A-Za-z0-9 ._()+-]")
-TESTS = ("squish", "pa", "em", "ret")
-SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret"}
+TESTS = ("squish", "pa", "em", "ret", "mvs")
+SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "mvs": "mvs"}
 DEFAULT_START = ("PRINT_START BED={bed} BED_TEMP={bed} HOTEND={nozzle} "
                  "EXTRUDER={nozzle} EXTRUDER_TEMP={nozzle}")
 
@@ -212,6 +212,7 @@ class Printune:
         self.chamber_sensor = config.get("chamber_sensor", "")
         self.pa_range = config.get("pa_range", gen.OPTIONS["pa"])
         self.ret_range = config.get("ret_range", gen.OPTIONS["ret"])
+        self.mvs_range = config.get("mvs_range", "")      # "" = per filament type
         # toolhead radius for keeping travel clear of finished prints (0 = Orca's 65 mm)
         self.toolhead_radius = config.getfloat("toolhead_radius", 0., minval=0., maxval=200.)
         # extra Orca settings for the wizard's sessions, one "key = value" per line
@@ -713,6 +714,11 @@ class Printune:
             "fan_max_speed": str(fil["fan"]), "fan_min_speed": str(min(30, fil["fan"])),
             "filament_max_volumetric_speed": str(fil["vol"]),
             "use_firmware_retraction": "1" if "firmware_retraction" in settings else "0",
+            # the max flow tower clamps its top bands to these
+            "machine_max_speed_x": "%g" % (st["max_velocity"],),
+            "machine_max_speed_y": "%g" % (st["max_velocity"],),
+            "machine_max_acceleration_x": "%g" % (st["max_accel"],),
+            "machine_max_acceleration_y": "%g" % (st["max_accel"],),
         })
         # never ask for more than the printer allows (SET_VELOCITY_LIMIT is not clamped)
         for k, v in list(cfg.items()):
@@ -727,7 +733,7 @@ class Printune:
                 cfg[k] = "%g" % min(float(v), st["max_velocity"])
         cfg.update(self.orca)
         opts = {"temps": ",".join(str(t) for t in gen.tower_temps(tmin, tmax)),
-                "pa": self.pa_range, "ret": self.ret_range}
+                "pa": self.pa_range, "ret": self.ret_range, "mvs": self.mvs_range or fil.get("mvs", gen.OPTIONS["mvs"])}
         if self.toolhead_radius:
             opts["clearance"] = "%g" % (self.toolhead_radius,)
         return cfg, opts, mid
@@ -949,6 +955,8 @@ class Printune:
         if "em" in tested:
             pfr = float(first(cfg, "print_flow_ratio", "1") or 1.0) or 1.0
             put("filament_flow_ratio", fnum(float(S["em"]) / pfr, 4), "flow ratio")
+        if "mvs" in tested and float(S.get("mvs", 0)) > 0:
+            put("filament_max_volumetric_speed", fnum(S["mvs"], 1), "max volumetric speed")
         if "pa" in tested:
             put("enable_pressure_advance", "1", "PA enabled")
             put("pressure_advance", fnum(S["pa"], 4), "pressure advance")
