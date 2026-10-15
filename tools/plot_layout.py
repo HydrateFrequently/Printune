@@ -13,7 +13,8 @@ d = np.load(path + ".paths.npz")
 segs, trav, obj = d["segs"], d["trav"], d["obj"]
 fam = np.array([re.sub(r"\d+$", "", o).rstrip("_") for o in obj])
 col = {"PATCH": "#4C78A8", "PATCH_B": "#9ECAE9", "PA_COARSE": "#E45756", "PA_FINE": "#FF9DA6",
-       "EM_C": "#54A24B", "EM_F": "#88D27A", "RET": "#B279A2", "-": "#999999"}
+       "EM_C": "#54A24B", "EM_F": "#88D27A", "RET": "#B279A2", "COOL": "#F58518",
+       "COOL_CONE": "#EECA3B", "MVS": "#72B7B2", "-": "#999999"}
 defs = []
 for ln in open(path):
     if ln.startswith("EXCLUDE_OBJECT_DEFINE"):
@@ -42,6 +43,7 @@ ax.set_title("ROUGH layout check - Printune session, top view (assumed 375 x 388
 from matplotlib.lines import Line2D
 ax.legend([Line2D([0], [0], color=c, lw=3) for c in list(col.values())[:-1]],
           ["1 squish patches", "1 extra patches (optional)", "2 PA pattern", "2 PA fine (optional)",
-           "3 EM cubes", "3 EM fine (optional)", "4 retraction towers"], loc="upper right", fontsize=7, framealpha=0.9)
+           "3 EM cubes", "3 EM fine (optional)", "4 retraction towers",
+           "5 cooling blocks", "5 cooling cone", "6 max flow tower"], loc="upper right", fontsize=7, framealpha=0.9)
 fig.tight_layout(); fig.savefig(out, dpi=130)
 print("wrote", out)

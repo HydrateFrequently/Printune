@@ -245,6 +245,8 @@ input[type=text], input[type=number] {
           <span>Smooth top surfaces: not too much, not too little plastic.</span></button>
         <button type="button" class="test-card" data-test="ret"><b>Retraction &amp; temperature</b>
           <span>Towers that show which settings string the least.</span></button>
+        <button type="button" class="test-card" data-test="cool"><b>Cooling</b>
+          <span>Overhang blocks pick one steady fan %; a cone shows the shortest layer time.</span></button>
         <button type="button" class="test-card" data-test="mvs"><b>Max volumetric flow</b>
           <span>A thin tower printed faster and faster: how much plastic the hotend can melt.</span></button>
       </div>
@@ -406,6 +408,7 @@ const TESTS = [
   { key: "pa", label: "Pressure advance", stage: "Pressure advance" },
   { key: "em", label: "Flow (extrusion multiplier)", stage: "Flow" },
   { key: "ret", label: "Retraction & temperature", stage: "Retraction" },
+  { key: "cool", label: "Cooling (fan & layer time)", stage: "Cooling" },
   { key: "mvs", label: "Max volumetric flow", stage: "Max flow" },
 ];
 const SUBSCRIBE = {
@@ -791,7 +794,7 @@ function renderPrompt() {
   renderResultsExtras();
   renderGraphs();
   // max flow band list: also take a typed height or band number
-  show("pMvs", !!prompt && /^Printune 5\/5 - Max flow$/.test(prompt.title || ""));
+  show("pMvs", !!prompt && /^Printune 6\/6 - Max flow$/.test(prompt.title || ""));
 }
 
 // Shake&Tune graphs made by the last run, under its prompt
@@ -1113,6 +1116,12 @@ function maybeSyntheticResults() {
   if (tested.includes("em")) {
     const fr = Number(m.em) / (Number(m.pfr) || 1);
     items.push({ type: "text", text: "Orca flow ratio: " + fr.toFixed(3) });
+  }
+  if (tested.includes("cool") && Number(m.cool_fan) >= 0) {
+    items.push({ type: "text", text: "Fan: " + Number(m.cool_fan) + " %, constant (also for overhangs)" });
+  }
+  if (tested.includes("cool") && Number(m.cool_lt) > 0) {
+    items.push({ type: "text", text: "Minimum layer time: " + Number(m.cool_lt) + " s" });
   }
   if (tested.includes("mvs") && Number(m.mvs) > 0) {
     items.push({ type: "text", text: "Max volumetric speed: " + Number(m.mvs).toFixed(1) + " mm³/s (" +

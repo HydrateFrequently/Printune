@@ -10,7 +10,9 @@ on one bed, each depending on the values picked before it:
   2. Pressure advance    - a row of frames, one per PA value (+ optional fine pass)
   3. Flow (extrusion multiplier) - 30x30x3 mm cubes (+ optional 0.5 % fine pass)
   4. Retraction          - towers at several temperatures, printed one at a time
-  5. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
+  5. Cooling             - overhang blocks, one per fan speed (fan %), then a cone whose layer
+                           time falls with height (minimum layer time)
+  6. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
 
 Between tests the printer pauses and the Printune page (or Mainsail/Fluidd)
 shows one button per tested value. The picked value is applied to every later
@@ -46,7 +48,7 @@ import re
 import shlex
 import sys
 
-VERSION = 5            # must match variable_version in printune.cfg
+VERSION = 6            # must match variable_version in printune.cfg
 MARKER = "PRINTUNE"
 
 # --------------------------------------------------------------------------
@@ -85,6 +87,7 @@ DEFAULTS = {
     "initial_layer_acceleration": "1000",
     "travel_acceleration": "8000",
     "filament_max_volumetric_speed": "24",
+    "filament_type": "ABS",
     "nozzle_temperature": "250",
     "nozzle_temperature_initial_layer": "250",
     "fan_max_speed": "60",
@@ -116,16 +119,19 @@ DEFAULTS = {
 # Filament types for the on-printer wizard: starting points, not tuned values.
 # t = nozzle range to test (°C), bed (°C), fan (%), vol = max volumetric speed (mm3/s),
 # soak = wants a heat-soaked enclosure, parent = Orca system preset the result inherits,
-# mvs = max flow tower range when it differs from OPTIONS["mvs"].
+# mvs = max flow tower range when it differs from OPTIONS["mvs"],
+# cool = cooling test: fan speeds (%), cone layer time at the bottom (s), block layer time (s).
+COOL_LOW = ("20,40,60,80", 26, 15)     # filaments that want little fan (ABS: ~15 s minimum layer time)
+COOL_HIGH = ("40,70,100", 16, 8)
 FILAMENTS = {
-    "PLA":  dict(t=(200, 220), bed=60,  fan=100, vol=15, soak=0, parent="Generic PLA @System"),
-    "PETG": dict(t=(230, 250), bed=80,  fan=40,  vol=12, soak=0, parent="Generic PETG @System"),
-    "ABS":  dict(t=(240, 260), bed=100, fan=20,  vol=20, soak=1, parent="Generic ABS @System"),
-    "ASA":  dict(t=(250, 270), bed=100, fan=20,  vol=20, soak=1, parent="Generic ASA @System"),
-    "PC":   dict(t=(260, 280), bed=110, fan=0,   vol=15, soak=1, parent="Generic PC @System"),
-    "PA":   dict(t=(250, 270), bed=80,  fan=0,   vol=12, soak=1, parent="Generic PA @System"),
+    "PLA":  dict(t=(200, 220), bed=60,  fan=100, vol=15, soak=0, parent="Generic PLA @System", cool=COOL_HIGH),
+    "PETG": dict(t=(230, 250), bed=80,  fan=40,  vol=12, soak=0, parent="Generic PETG @System", cool=COOL_HIGH),
+    "ABS":  dict(t=(240, 260), bed=100, fan=20,  vol=20, soak=1, parent="Generic ABS @System", cool=COOL_LOW),
+    "ASA":  dict(t=(250, 270), bed=100, fan=20,  vol=20, soak=1, parent="Generic ASA @System", cool=COOL_LOW),
+    "PC":   dict(t=(260, 280), bed=110, fan=0,   vol=15, soak=1, parent="Generic PC @System", cool=COOL_LOW),
+    "PA":   dict(t=(250, 270), bed=80,  fan=0,   vol=12, soak=1, parent="Generic PA @System", cool=COOL_LOW),
     "TPU":  dict(t=(220, 240), bed=50,  fan=60,  vol=4,  soak=0, parent="Generic TPU @System",
-                mvs="1-12/0.5"),
+                mvs="1-12/0.5", cool=COOL_HIGH),
 }
 
 
@@ -153,7 +159,7 @@ END_GCODE = "PRINT_END"
 
 # Test options (not Orca settings). All can be set on the command line or in the object name.
 OPTIONS = {
-    "skip": "",                 # comma list of: patches, pa, em, ret, mvs
+    "skip": "",                 # comma list of: patches, pa, em, ret, cool, mvs
     "patches_extra": 4,         # optional 2nd round of patches (0 = none)
     "pa": "0-0.08/0.005",       # direct drive range
     "pa_fine": "0.005/0.001",   # +-range/step around the pick, 0 = no fine pass
@@ -171,6 +177,13 @@ OPTIONS = {
     "mvs": "5-30/1",            # max volumetric flow tower: flow per band, mm3/s
     "mvs_band": 3.0,            # height of each flow band, mm
     "mvs_fan": 0,               # 0 = fan_max_speed
+    "cool_fans": "",            # cooling blocks' fan speeds, %; "" = by filament type (PLA 40,70,100; ABS 20,40,60,80)
+    "cool_angles": "30-70/10",  # overhang angles of each block, bottom to top, degrees from vertical
+    "cool_time": 0,             # cone layer time at the bottom, s; 0 = by filament type (PLA 16, ABS 26)
+    "cool_pad": 0,              # blocks: layers slowed down to this layer time, s; 0 = by type (PLA 8, ABS 15)
+    "mcr": 0.5,                 # the printer's minimum_cruise_ratio (the plugin sets it)
+    "zv": 0,                    # max_z_velocity, 0 = max_velocity (the plugin sets it)
+    "za": 0,                    # max_z_accel, 0 = max_accel (the plugin sets it)
     "scv": 5.0,                 # the printer's square_corner_velocity (the plugin sets it)
     "clearance": 0,             # toolhead radius for the collision check, 0 = Orca extruder_clearance_radius
     "low_ok": 1.2,              # objects lower than this may sit under the toolhead
@@ -230,6 +243,10 @@ class Settings:
         self.vmax = min(_num(c["machine_max_speed_x"]), _num(c["machine_max_speed_y"])) or 1e9
         self.scv = float(self.opt["scv"]) or 5.0
         self.amax = min(_num(c["machine_max_acceleration_x"]), _num(c["machine_max_acceleration_y"])) or 1e9
+        self.mcr = float(self.opt["mcr"])
+        self.zv = float(self.opt["zv"]) or self.vmax
+        self.za = float(self.opt["za"]) or self.amax
+        self.ftype = str(c.get("filament_type", "")).split(";")[0].strip().strip('"').upper()
 
         a0 = _num(c["default_acceleration"])
         self.a_default = a0
@@ -330,6 +347,20 @@ class Writer:
         self.t_total = 0.0          # rough print time, s (moves only, no heating or pauses)
         self.max_h = 0.0            # tallest thing printed so far
         self.paths = []             # (x0,y0,x1,y1,z,w,kind) for checks/renders
+        self.vscale = 1.0           # cooling blocks: extrusion moves slowed down to stretch a layer
+        self.vmin = 10.0            # ... but not below this
+
+    _STATE = ("x", "y", "z", "retracted", "hopped", "accel", "e_total", "t_total", "max_h")
+
+    def snapshot(self):
+        return dict((k, getattr(self, k)) for k in self._STATE), len(self.out), len(self.paths)
+
+    def restore(self, snap):
+        st, n_out, n_paths = snap
+        for k, v in st.items():
+            setattr(self, k, v)
+        del self.out[n_out:]
+        del self.paths[n_paths:]
 
     def g(self, line):
         self.out.append(line)
@@ -433,6 +464,8 @@ class Writer:
         a = self.area(w, h)
         if cap:
             v = min(v, self.s.mvs / a)
+        if self.vscale < 1.0:
+            v = max(v * self.vscale, min(v, self.vmin))
         e = L * a / self.s.fil_area
         self.e_total += e
         self.g("G1 X%.3f Y%.3f E%.5f F%d" % (x, y, e, v * 60))
@@ -967,6 +1000,124 @@ def circle_v_limit(r, seg_deg, accel, scv):
     return math.sqrt(kalico_junction_v2(d0, d1, L, L, 0, 0, accel, scv))
 
 
+def kalico_plan(moves, scv, mcr=0.5, icv=1.0, vmax=1e9, zv=1e9, za=1e9):
+    """Time of each move as Kalico's toolhead plans it: toolhead.Move (z and extrude-only limits),
+    Move.calc_junction (junction deviation, approximated centripetal, extruder instant_corner_v)
+    and LookAheadQueue.flush (with minimum_cruise_ratio smoothing), flushed once at the end.
+    moves: [(start (x, y, z, e), end (x, y, z, e), speed mm/s, accel mm/s2)]. Returns [s]."""
+    n = len(moves)
+    kin, L, ax, cr2, acc, jd, dv2, sdv2 = [], [], [], [], [], [], [], []
+    for sp, ep, speed, accel in moves:
+        d = [ep[i] - sp[i] for i in range(4)]
+        md = math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+        a, v = accel, min(speed, vmax)
+        if md < 1e-9:
+            md = abs(d[3])
+            k = False
+            a, v = accel, speed          # extrude only: the extruder's own limits, not modelled
+            r = (0.0, 0.0, 0.0, 1.0 if d[3] >= 0 else -1.0)
+        else:
+            k = True
+            r = tuple(c / md for c in d)
+        c2 = v * v
+        sd = 2.0 * md * accel * (1.0 - mcr)
+        if k and d[2]:
+            ratio = md / abs(d[2])
+            c2 = min(c2, (zv * ratio) ** 2)
+            a = min(a, za * ratio)
+        de = 2.0 * md * a
+        kin.append(k)
+        L.append(md)
+        ax.append(r)
+        cr2.append(c2)
+        acc.append(a)
+        jd.append(scv * scv * SQRT2_1 / accel)
+        dv2.append(de)
+        sdv2.append(min(sd, de))
+    ms2 = [0.0] * n
+    msm2 = [0.0] * n
+    for i in range(1, n):
+        if not (kin[i] and kin[i - 1]):
+            continue
+        r0, r1 = ax[i - 1], ax[i]
+        dr = r1[3] - r0[3]
+        m = min(cr2[i], cr2[i - 1], ms2[i - 1] + dv2[i - 1], (icv / abs(dr)) ** 2 if dr else cr2[i])
+        jc = -(r1[0] * r0[0] + r1[1] * r0[1] + r1[2] * r0[2])
+        st = math.sqrt(max(0.5 * (1.0 - jc), 0.0))
+        ct = math.sqrt(max(0.5 * (1.0 + jc), 0.0))
+        if 1.0 - st > 0.0 and ct > 0.0:
+            rjd = st / (1.0 - st)
+            qt = 0.25 * st / ct
+            m = min(m, rjd * jd[i] * acc[i], rjd * jd[i - 1] * acc[i - 1], dv2[i] * qt, dv2[i - 1] * qt)
+        ms2[i] = m
+        msm2[i] = min(m, msm2[i - 1] + sdv2[i - 1])
+    t = [0.0] * n
+
+    def junction(i, s2, c2, e2):
+        a = acc[i]
+        sv, cv, ev = math.sqrt(s2), math.sqrt(c2), math.sqrt(e2)
+        ad, dd = (c2 - s2) * 0.5 / a, (c2 - e2) * 0.5 / a
+        t[i] = ((ad / ((sv + cv) * 0.5) if ad > 0 else 0.0) + (L[i] - ad - dd) / cv
+                + (dd / ((ev + cv) * 0.5) if dd > 0 else 0.0)) if cv > 0 else 0.0
+
+    delayed = []
+    nxt_end = nxt_sm = peak = 0.0
+    for i in range(n - 1, -1, -1):
+        reach = nxt_end + dv2[i]
+        st2 = min(ms2[i], reach)
+        reach_sm = nxt_sm + sdv2[i]
+        sm = min(msm2[i], reach_sm)
+        if sm < reach_sm:
+            if sm + sdv2[i] > nxt_sm or delayed:
+                peak = min(cr2[i], (sm + reach_sm) * 0.5)
+                if delayed:
+                    mc = peak
+                    for j, s2, e2 in reversed(delayed):
+                        mc = min(mc, s2)
+                        junction(j, min(s2, mc), mc, min(e2, mc))
+                    delayed = []
+            c2 = min((st2 + reach) * 0.5, cr2[i], peak)
+            junction(i, min(st2, c2), c2, min(nxt_end, c2))
+        else:
+            delayed.append((i, st2, nxt_end))
+        nxt_end, nxt_sm = st2, sm
+    return t
+
+
+_GRX = re.compile(r"([XYZEF])(-?[\d.]+)")
+
+
+def gcode_moves(lines, pos=(0.0, 0.0, 0.0), accel=3000.0, feed=50.0, fw=(0.5, 35.0)):
+    """The moves of a stretch of Printune G-code (G90, M83), for kalico_plan. Also returns, for
+    each line, how many moves come before it. fw: firmware retraction (length, speed) for G10/G11."""
+    x, y, z = pos
+    moves, before = [], []
+    for ln in lines:
+        before.append(len(moves))
+        t = ln.split(";", 1)[0].strip()
+        if not t:
+            continue
+        if t.startswith("SET_VELOCITY_LIMIT"):
+            m = re.search(r"ACCEL=([\d.]+)", t)
+            if m:
+                accel = float(m.group(1))
+            continue
+        if t in ("G10", "G11"):
+            e = -fw[0] if t == "G10" else fw[0]
+            moves.append(((x, y, z, 0.0), (x, y, z, e), fw[1], accel))
+            continue
+        if not (t.startswith("G1 ") or t.startswith("G0 ")):
+            continue
+        d = dict((k, float(v)) for k, v in _GRX.findall(t))
+        if "F" in d:
+            feed = d["F"] / 60.0
+        nx, ny, nz, e = d.get("X", x), d.get("Y", y), d.get("Z", z), d.get("E", 0.0)
+        if (nx, ny, nz) != (x, y, z) or e:
+            moves.append(((x, y, z, 0.0), (nx, ny, nz, e), feed, accel))
+        x, y, z = nx, ny, nz
+    return moves, before
+
+
 class MVSTower:
     def __init__(self, s, flows, band_h):
         self.s = s
@@ -1072,6 +1223,198 @@ class MVSTower:
         return out
 
 
+# ---- 5. Cooling: the fan from overhang blocks, the minimum layer time from a cone ---------
+# Part A: one block per fan speed, each printed alone with its fan. The block's front leans out
+# more every COOL_BAND_LAYERS layers (30, 40 ... 70 degrees from vertical by default); a groove on
+# both sides marks each step. Each layer is slowed down (as Orca does) to the filament's usual
+# minimum layer time, so the fan is judged at a realistic layer time, not on a tiny hot block.
+# Part B: a round cone printed alone at one constant speed and the picked fan, nothing slows it.
+# Its radius shrinks so that the layer time falls by the same amount every layer (the side curves
+# in like a bullet); a small bump on the front marks every 2 s of layer time. Each layer is one
+# Archimedean spiral (in to the centre, then out on the next layer), so there are no corners.
+COOL_W = 20.0           # block width (X), mm
+COOL_D = 8.0            # block depth (Y), mm
+COOL_BAND_LAYERS = 6    # layers per overhang angle
+COOL_GROOVE = 0.4       # side groove where the angle steps up, mm
+COOL_BASE = 2.0         # the base plate reaches this far past the block (more under the overhang)
+CONE_V = 60.0           # cone speed, mm/s (lower if the outer wall speed or the flow limit is lower)
+CONE_MARK_H = 1.2       # height for every 2 s of layer time, mm
+CONE_STEP = 2.0         # a marker every 2 s
+CONE_TOP = 1.0          # the cone ends at about this layer time, s
+CONE_BUMP = 0.5         # marker bump, mm outward
+CONE_BUMP_L = 10.0      # marker bump length, mm (shorter near the top)
+CONE_MARK_DEG = 270.0   # markers face the front (-Y)
+CONE_SEG = 0.8          # spiral segment length, mm
+CONE_CHORD = 0.02       # largest chord error, mm
+
+
+class CoolTest:
+    def __init__(self, s, fans, angles, t0, pad):
+        self.s = s
+        self.fans = [int(round(f)) for f in fans]
+        self.angles = angles
+        self.t0 = t0
+        self.pad = pad
+        # block layers: (z, layer height, front offset, groove)
+        self.layers = [(s.h1 + li * s.h, s.h1 if li == 0 else s.h, 0.0, False) for li in range(BASE_LAYERS)]
+        z, off = self.layers[-1][0], 0.0
+        for b, ang in enumerate(angles):
+            for k in range(COOL_BAND_LAYERS):
+                z += s.h
+                off += s.h * math.tan(math.radians(ang))
+                self.layers.append((z, s.h, off, b > 0 and k == 0))
+        self.shift, self.block_h = off, z
+        # cone
+        self.w, self.h = s.w_inner, s.h
+        self.area = Writer.area(self.w, self.h)
+        self.p = spacing(self.w, self.h)
+        self.v = min(CONE_V, s.v_outer, s.vmax, s.mvs / self.area)
+        self.acc = min(s.a_outer, s.amax)
+        self.per2 = max(2, int(round(CONE_MARK_H / s.h)))       # layers per 2 s
+        self._plan()
+
+    def plan_args(self):
+        s = self.s
+        return dict(scv=s.scv, mcr=s.mcr, vmax=s.vmax, zv=s.zv, za=s.za)
+
+    # ---- cone geometry ----
+    def _bump(self, th, r):
+        lb = min(CONE_BUMP_L, 1.5 * r)
+        d = ((th - CONE_MARK_DEG + 180.0) % 360.0 - 180.0) * math.pi / 180.0 * r
+        return (CONE_BUMP * (1 + math.cos(2 * math.pi * d / lb)) / 2 if abs(d) < lb / 2 else 0.0), lb, d
+
+    def spiral(self, R, inward, th0, bump=False):
+        """One cone layer around (0, 0): a spiral from radius R in to the centre (inward) or from
+        the centre out to R, counter-clockwise from angle th0 (deg). The outermost turn carries
+        the marker bump. Returns the points and the end angle."""
+        p, rc = self.p, self.p / 2
+        span = max(0.0, (R - rc) / p * 2 * math.pi)
+        pts, phi = [], 0.0
+        while True:
+            r = R - p * phi / (2 * math.pi) if inward else rc + p * phi / (2 * math.pi)
+            th = th0 + math.degrees(phi)
+            near = False
+            if bump and ((inward and phi < 2 * math.pi) or (not inward and phi > span - 2 * math.pi)):
+                b, lb, d = self._bump(th, r)
+                r += b
+                near = abs(d) < lb / 2 + CONE_SEG
+            pts.append((r * math.cos(math.radians(th)), r * math.sin(math.radians(th))))
+            if phi >= span:
+                break
+            rr = max(r, rc)
+            dphi = min(CONE_SEG / rr, 2 * math.acos(max(-1.0, 1 - CONE_CHORD / rr)), math.pi / 6)
+            if near:
+                dphi = min(dphi, min(CONE_BUMP_L, 1.5 * rr) / 16 / rr)
+            phi = min(span, phi + dphi)
+        return pts, th0 + math.degrees(span)
+
+    def _t(self, R):
+        """Time of one layer of radius R on its own (starting and ending at rest), s."""
+        pts, _ = self.spiral(R, True, 90.0)
+        mv = [((a[0], a[1], 0, 0), (b[0], b[1], 0, math.hypot(b[0] - a[0], b[1] - a[1]) * self.area / self.s.fil_area),
+               self.v, self.acc) for a, b in zip(pts, pts[1:])]
+        return sum(kalico_plan(mv, **self.plan_args()))
+
+    def _plan(self):
+        """Radius of every cone layer, so the layer time falls by 2 s every per2 layers."""
+        dt = CONE_STEP / self.per2
+        targets = []
+        while self.t0 - len(targets) * dt >= CONE_TOP - 1e-6:
+            targets.append(self.t0 - len(targets) * dt)
+        rmax = math.sqrt(self.t0 * self.p * self.v / math.pi) * 1.3 + 2.0
+        grid = [0.5 * (rmax / 0.5) ** (i / 48.0) for i in range(49)]
+        tt = [self._t(R) for R in grid]
+
+        def inv(t):
+            for i in range(1, len(grid)):
+                if tt[i] >= t:
+                    f = (t - tt[i - 1]) / max(1e-9, tt[i] - tt[i - 1])
+                    return math.sqrt(grid[i - 1] ** 2 + f * (grid[i] ** 2 - grid[i - 1] ** 2))
+            return grid[-1]
+        radii = [inv(t) for t in targets]
+        self.marks = {}
+        for k, t in enumerate(targets):
+            if k >= 3 and abs(t / CONE_STEP - round(t / CONE_STEP)) < 1e-6:
+                # markers sit exactly on their time: refine the radius
+                R = radii[k]
+                for _ in range(4):
+                    tr = self._t(R)
+                    if abs(tr - t) < 0.01:
+                        break
+                    R *= math.sqrt(t / tr)
+                radii[k] = R
+                self.marks[k + 1] = int(round(t))
+        self.radii = [radii[0]] + radii          # layer 0 (first layer) has the radius of layer 1
+        self.targets = [None] + targets
+        self.top = self.s.h1 + len(targets) * self.s.h
+        self.R = max(self.radii) + CONE_BUMP
+        self.cone_times = []
+
+    def z(self, k):
+        return self.s.h1 + k * self.s.h
+
+    def draw_cone(self, wr, cx, cy, fan_cmd):
+        s = self.s
+        th = 90.0
+        w0, h0 = s.w_first, s.h1
+        a0 = Writer.area(w0, h0)
+        ramp = max(3.0, 1.2 * s.h * self.v / s.zv, s.h * self.acc / s.za)
+        for k, R in enumerate(self.radii):
+            if k == s.fan_off_layers:
+                wr.g(fan_cmd)
+            inward = k % 2 == 0
+            pts, th_end = self.spiral(R, inward, th, k in self.marks or (k - 1) in self.marks)
+            pts = [(cx + x, cy + y) for x, y in pts]
+            if k == 0:
+                wr.travel(*pts[0], force=True)
+                wr.z_to(self.z(0))
+                wr.unretract()
+                wr.set_accel(min(s.a_first, s.amax))
+                self.l0 = (len(wr.out), (wr.x, wr.y, wr.z), wr.accel)
+                wr.g("; cone layer 0")
+                for x, y in pts[1:]:
+                    wr.spiral(x, y, self.z(0), a0, min(s.v_first, self.v), kind="cone", w=w0)
+                th = th_end
+                continue
+            if k == 1:
+                wr.set_accel(self.acc)
+            wr.g("; cone layer %d: %.2f s%s" % (k, self.targets[k],
+                                                 (", marker %d s" % self.marks[k]) if k in self.marks else ""))
+            z0, z1 = self.z(k - 1), self.z(k)
+            total = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
+            rl = min(ramp, total / 2)
+            dist = 0.0
+            for (xa, ya), (x, y) in zip(pts, pts[1:]):
+                seg = math.hypot(x - xa, y - ya)
+                mid = dist + seg / 2
+                dist += seg
+                z = z0 + (z1 - z0) * min(1.0, dist / rl)
+                # the nozzle rises over the first few mm: the gap under it, and the flow, grow from 0
+                scale = min(1.0, mid / rl)
+                wr.spiral(x, y, z, self.area, self.v, scale, kind="cone", w=self.w)
+            th = th_end
+        wr.max_h = max(wr.max_h, self.top)
+
+
+def cone_layer_times(lines, pos, accel, plan):
+    """Layer times of a cone from its G-code (lines from its '; cone layer 0' comment on):
+    [(layer, target s or None, marker s or None, time s, naive length/speed s)]."""
+    mv, before = gcode_moves(lines, pos, accel)
+    t = kalico_plan(mv, **plan)
+    starts = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"; cone layer (\d+)(?:: ([\d.]+) s)?(?:, marker (\d+) s)?", ln)
+        if m:
+            starts.append((before[i], int(m.group(1)), m.group(2) and float(m.group(2)),
+                           m.group(3) and int(m.group(3))))
+    out = []
+    for j, (i0, k, tgt, mk) in enumerate(starts):
+        i1 = starts[j + 1][0] if j + 1 < len(starts) else len(mv)
+        naive = sum(math.dist(a[:3], b[:3]) / v for a, b, v, _ in mv[i0:i1])
+        out.append((k, tgt, mk, sum(t[i0:i1]), naive))
+    return out
+
+
 # --------------------------------------------------------------------------
 # Session
 # --------------------------------------------------------------------------
@@ -1132,6 +1475,24 @@ class Session:
             self.mvs = MVSTower(s, flows, band)
             if self.mvs.bump < MVS_BUMP - 1e-6:
                 self.warn.append("max flow test: %.2f mm marker bumps (max_accel %.0f)" % (self.mvs.bump, s.amax))
+        self.cool = None
+        if "cool" not in s.skip:
+            ft = FILAMENTS.get(s.ftype)
+            dflt = ft["cool"] if ft else (COOL_HIGH if s.fan_max >= 50 else COOL_LOW)
+            fans = opt("cool_fans", parse_range, o["cool_fans"] or dflt[0])
+            angles = opt("cool_angles", parse_range)
+            if any(f < 0 or f > 100 for f in fans) or any(a <= 0 or a >= 85 for a in angles):
+                raise SystemExit("Printune: cool_fans are 0-100 %, cool_angles 1-84 degrees")
+            try:
+                t0 = float(o["cool_time"]) or dflt[1]
+                pad = float(o["cool_pad"]) or dflt[2]
+            except ValueError:
+                raise SystemExit("Printune: can't read cool_time or cool_pad")
+            if t0 < 2 * CONE_STEP + CONE_TOP:
+                raise SystemExit("Printune: cool_time must be at least %g s" % (2 * CONE_STEP + CONE_TOP))
+            self.cool = CoolTest(s, fans, angles, t0, pad)
+            if self.cool.top > s.max_z - 5:
+                raise SystemExit("Printune: the cooling cone is too tall for this printer: use a lower cool_time")
         self.objs = []
         self.t_print = int(round(s.t_nozzle))
         self.t_first = int(round(s.t_first))
@@ -1218,15 +1579,19 @@ class Session:
                 labs = [fmt_val(d * 100, 1) for d in self.em_fine]
                 self.em_f = self._place_em(labs, "EM_F", "em_fine", (col_l, by1 - m - hf / 2))
 
-        # retraction towers and the max flow tower (printed last). The tower is placed first, so
-        # the retraction towers fit around it; if that pushes anything onto a later plate, the
-        # retraction towers go first instead (a plate printed earlier must not hold the tower).
+        # retraction towers, cooling blocks and cone, and the max flow tower (printed last). The
+        # tower is placed first, so the others fit around it; if that puts anything printed before
+        # it on a later plate, everything goes in print order instead (a plate printed earlier
+        # must not hold the tower).
         saved = [list(p) for p in self.plates]
         self._place_mvs(X, Y)
         self._place_towers(Y)
-        if self.mvs_obj and self.towers and max(o.plate for o in self.towers) > self.mvs_obj.plate:
+        self._place_cool(X, Y)
+        before = self.towers + self.cool_objs + ([self.cone_obj] if self.cone_obj else [])
+        if self.mvs_obj and before and max(o.plate for o in before) > self.mvs_obj.plate:
             self.plates = saved
             self._place_towers(Y)
+            self._place_cool(X, Y)
             self._place_mvs(X, Y)
 
         # extra patches: printed right after the first round, so they only need to stay
@@ -1322,6 +1687,39 @@ class Session:
                 raise SystemExit("Printune: the max flow tower does not fit on this bed")
             self.mvs_obj = got[0]
 
+    def _place_cool(self, X, Y):
+        self.cool_objs, self.cone_obj = [], None
+        c = self.cool
+        if not c:
+            return
+        lw_, lh_ = label_size("100")
+        bw = COOL_W + 2 * COOL_BASE
+        bd = COOL_D + c.shift + 2 * COOL_BASE
+        n = len(c.fans)
+        for i, fan in enumerate(c.fans):
+            def build(cx, cy, i=i, fan=fan):
+                # base plate centred on (cx, cy); label behind it, prime line in front
+                base = (cx - bw / 2, cy - bd / 2, cx + bw / 2, cy + bd / 2)
+                ob = Obj("COOL_%d" % (i + 1), (base[0] - 1, base[1] - 6, base[2] + 1, base[3] + 2 + lh_ + 1),
+                         c.block_h, "cool")
+                ob.base, ob.fan = base, fan
+                ob.lab = (cx - label_size(str(fan))[0] / 2, base[3] + 2)
+                return [ob]
+            got = self._place([(build, (X(0.15 + 0.7 * i / max(1, n - 1)), Y(0.2)))])
+            if not got:
+                raise SystemExit("Printune: a cooling block does not fit on this bed")
+            self.cool_objs += got
+        hb = c.R + 2.0
+
+        def build(cx, cy):
+            ob = Obj("COOL_CONE", (cx - hb, cy - hb - 7, cx + hb, cy + hb), c.top, "cone")
+            ob.c = (cx, cy)
+            return [ob]
+        got = self._place([(build, (X(0.5), Y(0.75)))])
+        if not got:
+            raise SystemExit("Printune: the cooling cone does not fit on this bed")
+        self.cone_obj = got[0]
+
     def _place(self, builds, new_plate=True):
         """builds: [(build(cx, cy) -> objs, preferred (cx, cy))], tried in order. Place on the
         current plate if any fits, else on a new, empty plate. Returns the objects or None."""
@@ -1379,7 +1777,8 @@ class Session:
                 if overlap(o.box, p.box, 0.5):
                     return False
                 tall = p.height > s.low_ok
-                if tall and (p.section != o.section or o.section == "ret") and box_dist(o.box, p.box) < R:
+                # objects printed one at a time keep the toolhead clear of each other too
+                if tall and (p.section != o.section or o.section in ("ret", "cool")) and box_dist(o.box, p.box) < R:
                     return False
         return True
 
@@ -1496,8 +1895,8 @@ class Session:
         # ---- 1. patches ----
         if self.patches:
             g("; ----- 1. FIRST LAYER SQUISH -----")
-            g("M117 Printune 1/5 first layer - babystep now")
-            g("RESPOND MSG=\"Printune 1/5: first-layer patches. Babystep Z while they print.\"")
+            g("M117 Printune 1/6 first layer - babystep now")
+            g("RESPOND MSG=\"Printune 1/6: first-layer patches. Babystep Z while they print.\"")
             wr.fan(0)
             first = self.patches[0]
             wr.safe_travel(first.box[0], first.box[1] + 1)
@@ -1519,7 +1918,7 @@ class Session:
         # ---- 2. PA ----
         if self.pa_objs:
             g("; ----- 2. PRESSURE ADVANCE -----")
-            g("M117 Printune 2/5 pressure advance")
+            g("M117 Printune 2/6 pressure advance")
             self._plate(wr, self.pa_objs)
             g("M109 S%d" % self.t_print)
             fan = float(s.opt["pa_fan"]) or s.fan_max
@@ -1542,7 +1941,7 @@ class Session:
         # ---- 3. EM ----
         if self.em_c:
             g("; ----- 3. FLOW (EXTRUSION MULTIPLIER) -----")
-            g("M117 Printune 3/5 extrusion multiplier")
+            g("M117 Printune 3/6 extrusion multiplier")
             g("M109 S%d" % self.t_print)
             g("_PRINTUNE_APPLY")
             self._plate(wr, self.em_c)
@@ -1561,7 +1960,7 @@ class Session:
         # ---- 4. retraction ----
         if self.towers:
             g("; ----- 4. RETRACTION towers, one at a time, hottest first -----")
-            g("M117 Printune 4/5 retraction")
+            g("M117 Printune 4/6 retraction")
             # retraction tuning is optional; also the moment to brush the nozzle clean
             self._cp(wr, "_PRINTUNE_CP STEP=ret_ask SKIP=%s" % ",".join(o.name for o in self.towers))
             g("_PRINTUNE_APPLY")
@@ -1571,17 +1970,41 @@ class Session:
                 self._plate(wr, [o])
                 self._tower(wr, o, fan)
             wr.ret_macro = False
-            if self.mvs_obj:
-                # pick the retraction (and tower temperature) now: the flow tower prints at it
-                self._cp(wr, self._ret_cp() + " NEXT=%s" % self.mvs_obj.name)
+            cool = [o.name for o in self.cool_objs] + ([self.cone_obj.name] if self.cone_obj else [])
+            nxt = cool or ([self.mvs_obj.name] if self.mvs_obj else [])
+            if nxt:
+                # pick the retraction (and tower temperature) now: the later tests print at it
+                self._cp(wr, self._ret_cp() + " NEXT=%s" % ",".join(nxt))
 
-        # ---- 5. max volumetric flow ----
+        # ---- 5. cooling: fan from the overhang blocks, minimum layer time from the cone ----
+        if self.cone_obj:
+            c = self.cool
+            g("; ----- 5. COOLING: overhang blocks, one per fan speed, then the layer-time cone -----")
+            g("M117 Printune 5/6 cooling")
+            # the picks so far go into the preset now, so a cancel during the test keeps them
+            g("_PRINTUNE_SAVEPOINT")
+            names = [o.name for o in self.cool_objs] + [self.cone_obj.name]
+            for i, o in enumerate(self.cool_objs):
+                # the first plate pause can skip the whole cooling test
+                self._plate(wr, [o], skip=names if i == 0 else None, what="cool")
+                self._cool_block(wr, o)
+            if self.cool_objs:
+                self._cp(wr, "_PRINTUNE_CP STEP=cool_fan ALL=%s FANS=%s ANGLES=%s" % (
+                    ",".join(o.name for o in self.cool_objs), ",".join(str(f) for f in c.fans),
+                    ",".join(fmt_val(a, 1) for a in c.angles)))
+            self._plate(wr, [self.cone_obj], skip=[self.cone_obj.name], what="cone")
+            self._cone(wr, self.cone_obj)
+            if self.mvs_obj:
+                # pick the layer time now, then the max flow tower
+                self._cp(wr, self._cool_cp() + " NEXT=%s" % self.mvs_obj.name)
+
+        # ---- 6. max volumetric flow ----
         if self.mvs_obj:
-            g("; ----- 5. MAX VOLUMETRIC FLOW tower -----")
-            g("M117 Printune 5/5 max flow")
+            g("; ----- 6. MAX VOLUMETRIC FLOW tower -----")
+            g("M117 Printune 6/6 max flow")
             # the picks so far go into the preset now, so a cancel during the tower keeps them
             g("_PRINTUNE_SAVEPOINT")
-            self._plate(wr, [self.mvs_obj], skip=True)
+            self._plate(wr, [self.mvs_obj], skip=[self.mvs_obj.name], what="mvs")
             self._mvs(wr, self.mvs_obj)
         self._park(wr)
         g("_PRINTUNE_END")
@@ -1589,6 +2012,8 @@ class Session:
             m = self.mvs
             g("_PRINTUNE_CP STEP=mvs OBJ=%s FLOWS=%s BASE=%.3f BAND=%.3f" % (
                 self.mvs_obj.name, ",".join(fmt_val(f, 2) for f in m.flows), m.base_h, m.band_h))
+        elif self.cone_obj:
+            g(self._cool_cp())
         elif self.towers:
             g(self._ret_cp())
         else:
@@ -1600,6 +2025,106 @@ class Session:
         return "_PRINTUNE_CP STEP=ret ALL=%s TEMPS=%s RINGS=%s" % (
             ",".join(o.name for o in self.towers), ",".join(str(t) for t in self.temps),
             ",".join(fmt_val(v, 3) for v in self.ret_vals))
+
+    def _cool_cp(self):
+        c = self.cool
+        return "_PRINTUNE_CP STEP=cool_lt OBJ=%s TIMES=%s TOP=%.1f FAN=%d TYPE=%s" % (
+            self.cone_obj.name, ",".join(str(c.marks[k]) for k in sorted(c.marks)),
+            max(CONE_TOP, c.cone_times[-1][3] if c.cone_times else CONE_TOP), self._fan0(),
+            re.sub(r"[^A-Z0-9]", "", self.s.ftype) or "-")
+
+    def _fan0(self):
+        """The cone's fan when no fan was picked: the profile's."""
+        return int(round(self.s.fan_max))
+
+    def _layer_time(self, wr, snap):
+        """Time of what was written since snap, as Kalico plans it, s."""
+        st, i0, _ = snap
+        mv, _ = gcode_moves(wr.out[i0:], (st["x"] or 0.0, st["y"] or 0.0, st["z"]), st["accel"] or 3000.0,
+                            fw=(self.s.ret_len, self.s.ret_speed))
+        return sum(kalico_plan(mv, **self.cool.plan_args()))
+
+    def _cool_block(self, wr, o):
+        """One overhang block, alone, with its own fan; block layers stretched to cool.pad seconds."""
+        s, c = self.s, self.cool
+        x0, y0, x1, y1 = o.base
+        cx = (x0 + x1) / 2
+        yb = y1 - COOL_BASE                      # back face of the block at the base
+        self._park(wr)
+        wr.g("_PRINTUNE_COOL_TEMP OBJ=%s S=%d" % (o.name, self.t_print))
+        wr.safe_travel(o.box[0] + 1, o.box[1] + 1)
+        obj_start(wr, o)
+        wr.fan(0)
+        prime_line(wr, s, o.box[0] + 1, o.box[1] + 1, x1 - x0 - 2)
+        wr.g("; cooling block: fan %d %%, overhangs %s degrees, %d layers each, layers stretched to %g s" % (
+            o.fan, ",".join(fmt_val(a, 1) for a in c.angles), COOL_BAND_LAYERS, c.pad))
+        slow = []
+        for li, (z, h, off, groove) in enumerate(c.layers):
+            if li == s.fan_off_layers:
+                wr.fan(o.fan)
+            wr.g("; block layer %d" % li)
+            wr.z_to(z)
+            if li < BASE_LAYERS:
+                loops, edge = walls_rect(s, x0, y0, x1, y1, s.wall_loops, h, li == 0)
+                print_walls(wr, s, loops, h)
+                w = s.w_first if li == 0 else s.w_solid
+                v = s.v_first_infill if li == 0 else s.v_solid
+                a = s.a_first if li == 0 else s.a_solid
+                print_fill(wr, s, x0, y0, x1, y1, edge, w, h, v, a, spacing(w, h),
+                           45 if li % 2 == 0 else -45, s.ov_solid, "solid")
+                if li <= 1:
+                    label_tab(wr, s, o.lab[0], o.lab[1], str(o.fan), li)
+                continue
+            g_ = COOL_GROOVE if groove else 0.0
+            rect = (cx - COOL_W / 2 + g_, yb - COOL_D - off, cx + COOL_W / 2 - g_, yb - off)
+            snap = wr.snapshot()
+            t = 0.0
+            for _ in range(6):
+                loops, edge = walls_rect(s, *rect, s.wall_loops, h, False)
+                print_walls(wr, s, loops, h)
+                print_fill(wr, s, *rect, edge, s.w_solid, h, s.v_solid, s.a_solid, spacing(s.w_solid, h),
+                           45 if li % 2 == 0 else -45, s.ov_solid, "solid")
+                t = self._layer_time(wr, snap)
+                if t >= c.pad - 0.2 or wr.vscale * s.v_solid <= wr.vmin:
+                    break
+                # Orca-style: slow the whole layer down until it takes cool.pad seconds
+                vs = wr.vscale * t / c.pad
+                wr.restore(snap)
+                wr.vscale = vs
+            if t < c.pad - 0.5:
+                slow.append(t)
+            wr.vscale = 1.0
+        if s.fan_off_layers >= len(c.layers):
+            wr.fan(o.fan)
+        if slow:
+            self.warn.append("cooling test: block layers take %.1f s, not %g s (the %g mm/s floor)"
+                             % (min(slow), c.pad, wr.vmin))
+        wr.retract()
+        obj_end(wr, o)
+        wr.max_h = max(wr.max_h, c.block_h)
+
+    def _cone(self, wr, o):
+        s, c = self.s, self.cool
+        cx, cy = o.c
+        self._park(wr)
+        wr.g("_PRINTUNE_COOL_TEMP OBJ=%s S=%d" % (o.name, self.t_print))
+        wr.safe_travel(o.box[0] + 1, o.box[1] + 1)
+        obj_start(wr, o)
+        wr.fan(0)
+        prime_line(wr, s, o.box[0] + 1, o.box[1] + 1, o.box[2] - o.box[0] - 2)
+        # the layer times are the real ones: no speed override, nothing slows it down
+        wr.g("M220 S100")
+        wr.g("; cooling cone: %g mm/s, layer time %g s at the bottom, -%g s every %d layers, marker bumps "
+             "every %g s" % (c.v, c.t0, CONE_STEP, c.per2, CONE_STEP))
+        c.draw_cone(wr, cx, cy, "_PRINTUNE_COOL_FAN D=%d" % self._fan0())
+        # check: the layer times Kalico will print, from the G-code just written
+        i0, pos, acc = c.l0
+        c.cone_times = cone_layer_times(wr.out[i0:], pos, acc, c.plan_args())
+        off = [abs(t - tg) for k, tg, mk, t, _ in c.cone_times if mk]
+        if off and max(off) > 0.3:
+            self.warn.append("cooling cone: a marker is %.1f s off its layer time" % max(off))
+        wr.retract()
+        obj_end(wr, o)
 
     def _mvs(self, wr, o):
         s, m = self.s, self.mvs
@@ -1647,15 +2172,17 @@ class Session:
         bx0, by0, bx1, by1 = self.s.bed
         wr.safe_travel((bx0 + bx1) / 2, by1 - 10, clear=10.0)
 
-    def _plate(self, wr, objs, skip=False):
-        """Checkpoint before a test that goes on a new plate: clear the plate, printer stays hot."""
+    def _plate(self, wr, objs, skip=None, what=""):
+        """Checkpoint before a test that goes on a new plate: clear the plate, printer stays hot.
+        skip: objects a 'skip' button cancels there; what: its label (cool, cone, mvs)."""
         n = objs[0].plate
         if n <= 1:
             return
         # before every group on a later plate: the macro asks once per plate, and not at all
         # when this group was skipped (a later group on the same plate asks instead)
         names = ",".join(o.name for o in objs)
-        self._cp(wr, "_PRINTUNE_CP STEP=plate N=%d ALL=%s%s" % (n, names, (" SKIP=" + names) if skip else ""))
+        self._cp(wr, "_PRINTUNE_CP STEP=plate N=%d ALL=%s%s" % (
+            n, names, (" SKIP=%s WHAT=%s" % (",".join(skip), what)) if skip else ""))
 
     def _cp(self, wr, cmd):
         """Checkpoint: park first so PAUSE (and RESUME's return move) keeps the nozzle off the prints."""
@@ -1783,13 +2310,18 @@ class Session:
              "; DISCLAIMER: generated G-code, provided as is without any warranty. Use it at your own",
              "; risk; the authors take no responsibility for any damage. Watch the print.",
              "; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.",
-             "; Order: squish -> PA -> EM -> retraction -> max flow. Picks are applied to every later test.",
+             "; Order: squish -> PA -> EM -> retraction -> cooling -> max flow. Picks are applied to every later test.",
              "; PA values: %s" % ", ".join(fmt_val(v) for v in self.pa_vals),
              "; PA fine offsets: %s" % ", ".join(fmt_val(v, 5) for v in self.pa_fine),
              "; EM values: %s" % ", ".join("%.3f" % v for v in self.em_vals),
              "; EM fine offsets: %s" % ", ".join(fmt_val(v, 5) for v in self.em_fine),
              "; Retraction rings: %s mm @ %s mm/s, temps %s" % (", ".join(fmt_val(v, 3) for v in self.ret_vals),
                                                               s.opt["ret_speed"], ", ".join(map(str, self.temps))),
+             "; Cooling: fans %s %%, overhangs %s deg, cone %s" % (
+                 ",".join(str(f) for f in self.cool.fans), ",".join(fmt_val(a, 1) for a in self.cool.angles),
+                 "%g mm/s, %g s at the bottom, markers %s s" % (
+                     self.cool.v, self.cool.t0, ",".join(str(self.cool.marks[k]) for k in sorted(self.cool.marks))))
+             if self.cool else "; Cooling: -",
              "; Max flow bands: %s" % (", ".join(fmt_val(f, 2) for f in self.mvs.flows) if self.mvs else "-"),
              "; Firmware retraction: %s, z-hop %.2f, toolhead clearance radius %.0f mm" % (
                  s.fw_retract, s.z_hop, s.clearance)]

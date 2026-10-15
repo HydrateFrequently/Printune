@@ -23,6 +23,7 @@ def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388)):
     fa = math.pi * (fil_d / 2) ** 2
     x = y = z = 0.0
     obj = None
+    plate = 1
     segs = []      # x0,y0,x1,y1,z,w,e,kind(obj), is_travel
     out_of_bed = []
     rx = re.compile(r"([XYZEF])(-?[\d.]+)")
@@ -31,7 +32,11 @@ def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388)):
         if not t:
             continue
         if t.startswith("_PRINTUNE_CP STEP=plate"):
-            segs.append((x, y, x, y, z, 0.0, 0.0, "PLATE", 2))   # the plate is cleared here
+            n = int(re.search(r"N=(\d+)", t).group(1))
+            if n > plate:
+                # the plate is cleared here (later checkpoints for the same plate don't pause)
+                plate = n
+                segs.append((x, y, x, y, z, 0.0, 0.0, "PLATE", 2))
             continue
         if t.startswith("EXCLUDE_OBJECT_START"):
             obj = t.split("NAME=")[1]

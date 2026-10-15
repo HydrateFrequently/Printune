@@ -14,7 +14,8 @@
 # it was sliced with, including the filament preset's name and its parent.
 # _PRINTUNE_EXPORT reads that block from the session file, takes the filament
 # settings, puts the picked values on top (flow ratio, pressure advance,
-# retraction, nozzle temperature, max volumetric speed) and writes one JSON file that Orca imports
+# retraction, nozzle temperature, fan and minimum layer time, max volumetric speed) and writes one
+# JSON file that Orca imports
 # with File > Import > Import Configs. It always writes a new preset,
 # "<filament> (Printune)", so it never replaces one of your own presets.
 # A session made by the wizard carries a small block of its own with the name you
@@ -189,8 +190,8 @@ def cstr(v):
 
 # what the user may type for a name: also safe in G-code parameters and file names
 NAME_RE = re.compile(r"[^A-Za-z0-9 ._()+-]")
-TESTS = ("squish", "pa", "em", "ret", "mvs")
-SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "mvs": "mvs"}
+TESTS = ("squish", "pa", "em", "ret", "cool", "mvs")
+SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "cool": "cool", "mvs": "mvs"}
 DEFAULT_START = ("PRINT_START BED={bed} BED_TEMP={bed} HOTEND={nozzle} "
                  "EXTRUDER={nozzle} EXTRUDER_TEMP={nozzle}")
 
@@ -713,6 +714,7 @@ class Printune:
             "nozzle_temperature": str(mid), "nozzle_temperature_initial_layer": str(mid),
             "fan_max_speed": str(fil["fan"]), "fan_min_speed": str(min(30, fil["fan"])),
             "filament_max_volumetric_speed": str(fil["vol"]),
+            "filament_type": ftype,
             "use_firmware_retraction": "1" if "firmware_retraction" in settings else "0",
             # the max flow tower clamps its top bands to these
             "machine_max_speed_x": "%g" % (st["max_velocity"],),
@@ -734,8 +736,13 @@ class Printune:
         cfg.update(self.orca)
         opts = {"temps": ",".join(str(t) for t in gen.tower_temps(tmin, tmax)),
                 "pa": self.pa_range, "ret": self.ret_range, "mvs": self.mvs_range or fil.get("mvs", gen.OPTIONS["mvs"])}
-        # Kalico's corner rule limits the max flow tower's speed
+        # Kalico's corner rule limits the max flow tower's speed; the cooling cone's layer times
+        # are planned the way Kalico plans them
         opts["scv"] = "%g" % (st.get("square_corner_velocity", 5.),)
+        opts["mcr"] = "%g" % (st.get("minimum_cruise_ratio", .5),)
+        pr = settings.get("printer", {})
+        opts["zv"] = "%g" % (float(pr.get("max_z_velocity", st["max_velocity"])),)
+        opts["za"] = "%g" % (float(pr.get("max_z_accel", st["max_accel"])),)
         if self.toolhead_radius:
             opts["clearance"] = "%g" % (self.toolhead_radius,)
         return cfg, opts, mid
@@ -957,6 +964,16 @@ class Printune:
         if "em" in tested:
             pfr = float(first(cfg, "print_flow_ratio", "1") or 1.0) or 1.0
             put("filament_flow_ratio", fnum(float(S["em"]) / pfr, 4), "flow ratio")
+        if "cool" in tested and int(S.get("cool_fan", -1)) >= 0:
+            # one constant fan: the same speed at both thresholds, never off, also for overhangs
+            f = str(int(S["cool_fan"]))
+            put("fan_min_speed", f, "fan min")
+            put("fan_max_speed", f, "fan max")
+            put("reduce_fan_stop_start_freq", "1", "keep fan always on")
+            put("overhang_fan_speed", f, "overhang fan")
+        if "cool" in tested and float(S.get("cool_lt", 0)) > 0:
+            put("slow_down_layer_time", fnum(S["cool_lt"], 1), "minimum layer time")
+            put("slow_down_for_layer_cooling", "1", "slow down for cooling")
         if "mvs" in tested and float(S.get("mvs", 0)) > 0:
             put("filament_max_volumetric_speed", fnum(S["mvs"], 1), "max volumetric speed")
         if "pa" in tested:
