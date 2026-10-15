@@ -253,6 +253,8 @@ class Printune:
         gcode.register_command(
             "_PRINTUNE_BELT_LISTEN", self.cmd_PRINTUNE_BELT_LISTEN, desc=self.cmd_PRINTUNE_BELT_LISTEN_help)
         gcode.register_command(
+            "PRINTUNE_RECORD", self.cmd_PRINTUNE_RECORD, desc=self.cmd_PRINTUNE_RECORD_help)
+        gcode.register_command(
             "_PRINTUNE_SHAPER_RUN", self.cmd_PRINTUNE_SHAPER_RUN, desc=self.cmd_PRINTUNE_SHAPER_RUN_help)
         gcode.register_command(
             "_PRINTUNE_GRAPH", self.cmd_PRINTUNE_GRAPH, desc=self.cmd_PRINTUNE_GRAPH_help)
@@ -353,6 +355,9 @@ class Printune:
             self.state, self.message = "idle", ""
         if not samples:
             raise gcmd.error("Printune: the accelerometer sent no data")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        self._save_recording("belt%s-%s-quiet" % (belt, stamp), quiet)
+        self._save_recording("belt%s-%s" % (belt, stamp), samples)
         t = [s[0] for s in samples]
         res = belts.analyse(t, [s[1] for s in samples], [s[2] for s in samples],
                             [s[3] for s in samples], target=self.belts["target"], expect=n,
@@ -380,6 +385,63 @@ class Printune:
         else:
             gcmd.respond_info("Printune: belt %s: %.1f Hz (average of %d plucks)%s" % (
                 belt, res["freq"], res["used"], (" - " + res["note"]) if res["note"] else ""))
+
+    # ---------------- raw recordings, readable from Mainsail (Kalico's own go to /tmp) ----------------
+    REC_KEEP = 40
+
+    def _save_recording(self, name, samples):
+        """Write samples as ACCELEROMETER_MEASURE's CSV into printune_exports/recordings."""
+        if not samples:
+            return None
+        d = os.path.join(self.out_dir, "recordings")
+        try:
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, name + ".csv")
+            with open(path, "w") as f:
+                f.write("#time,accel_x,accel_y,accel_z\n")
+                f.writelines("%.6f,%.6f,%.6f,%.6f\n" % tuple(s[:4]) for s in samples)
+            old = sorted((os.path.getmtime(os.path.join(d, n)), n)
+                         for n in os.listdir(d) if n.endswith(".csv"))
+            for _, n in old[:-self.REC_KEEP]:
+                os.remove(os.path.join(d, n))
+            return path
+        except OSError as e:
+            logging.warning("printune: could not save recording %s: %s", name, e)
+            return None
+
+    cmd_PRINTUNE_RECORD_help = ("Printune: record an accelerometer for SECONDS and save it where "
+                                "Mainsail can download it (CHIP=, SECONDS=, NAME=)")
+
+    def cmd_PRINTUNE_RECORD(self, gcmd):
+        name = gcmd.get("CHIP", "")
+        if name:
+            try:
+                chip = self.printer.lookup_object(name)
+            except Exception:
+                chip = None
+        else:
+            rt = self.printer.lookup_object("resonance_tester", None)
+            chips = getattr(rt, "accel_chips", None) or []
+            chip = chips[0][1] if chips else None
+        if chip is None or not hasattr(chip, "start_internal_client"):
+            raise gcmd.error("Printune: no accelerometer %s" % (name or "found"))
+        secs = gcmd.get_float("SECONDS", 10., minval=.5, maxval=30.)
+        label = re.sub(r"[^A-Za-z0-9_-]", "_", gcmd.get("NAME", "")) or time.strftime("%Y%m%d-%H%M%S")
+        label = "%s-%s" % (re.sub(r"[^A-Za-z0-9_-]", "_", name or "accel"), label)
+        toolhead = self.printer.lookup_object("toolhead")
+        toolhead.wait_moves()
+        gcmd.respond_info("Printune: recording %.0f s, go" % secs)
+        client = chip.start_internal_client()
+        toolhead.dwell(secs)
+        client.finish_measurements()
+        samples = client.get_samples()
+        if not samples:
+            raise gcmd.error("Printune: the accelerometer sent no data")
+        path = self._save_recording(label, samples)
+        if not path:
+            raise gcmd.error("Printune: could not save the recording")
+        gcmd.respond_info("Printune: saved %d samples to %s" % (
+            len(samples), os.path.relpath(path, self.cfg_dir)))
 
     # ---------------- input shaper (Kalico's SHAPER_CALIBRATE) ----------------
     cmd_PRINTUNE_SHAPER_RUN_help = "Printune: run SHAPER_CALIBRATE and keep its recommendation"
