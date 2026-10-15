@@ -83,7 +83,7 @@ button:focus-visible, .btn:focus-visible, input:focus-visible { outline: 3px sol
 }
 .test-card b { font-size: 18px; color: var(--primary); }
 a.test-card { text-decoration: none; }
-.test-card.off { opacity: .5; border-style: dashed; }
+.test-card.off { border-style: dashed; background: transparent; }
 #pGraphs { margin: 10px 0; }
 #pGraphs img { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: #fff; margin: 8px 0; }
 .test-card.off b { color: var(--muted); }
@@ -794,7 +794,7 @@ function renderGraphs() {
   box.textContent = "";
   for (const rel of list) {
     const href = "/server/files/config/" + rel.split("/").map(encodeURIComponent).join("/");
-    const a = el("a", { href: href, target: "_blank", rel: "noopener", class: "graph" });
+    const a = el("a", { href: href, target: "_blank", rel: "noopener" });
     a.appendChild(el("img", { src: href, alt: "Shake&Tune graph " + rel.split("/").pop(), loading: "lazy" }));
     box.appendChild(a);
   }
@@ -1075,11 +1075,12 @@ function renderHome() {
   show("startArea", !busy);
   show("tools", !busy);
   const tools = pt().tools || {};
-  show("beltBtn", !!tools.accel);
-  show("beltOff", !tools.accel);
+  // the belt step is for CoreXY; without an accelerometer the steps link to how to add one
+  show("beltBtn", !!tools.accel && !!tools.corexy);
+  show("beltOff", !tools.accel && !!tools.corexy);
   show("shaperBtn", !!tools.accel);
   show("shaperOff", !tools.accel);
-  show("stOff", !tools.shaketune);
+  show("stOff", !!tools.accel && !tools.shaketune);
   const enc = filaments();
   const t = enc[form.type] || {};
   $("heatBtn").textContent = "Heat nozzle to " + steppers.heat.value + " °C";
@@ -1165,8 +1166,8 @@ function render() {
 // ---------- event wiring ----------
 function wire() {
   $("wizardBtn").onclick = () => openForm("wizard");
-  $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS");
-  $("shaperBtn").onclick = () => runGcode("_PRINTUNE_SHAPER");
+  $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS").catch(() => {});
+  $("shaperBtn").onclick = () => runGcode("_PRINTUNE_SHAPER").catch(() => {});
   for (const b of document.querySelectorAll("[data-test]")) b.onclick = () => openForm(b.dataset.test);
   $("backBtn").onclick = () => { saveForm(); view = "home"; render(); };
   $("startBtn").onclick = startSession;

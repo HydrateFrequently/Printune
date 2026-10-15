@@ -12,10 +12,11 @@ import math
 
 import numpy as np
 
-BAND = (30.0, 500.0)      # Hz, what can be a belt
+SEARCH = (25.0, 500.0)    # Hz, where a belt is looked for (wider than any target band)
 SKIP = 0.03               # s after the onset: let the frame ring out
 WINDOW = 0.6              # s of ringing used per pluck
 DEAD = 0.45               # s: a new pluck can't start sooner than this
+MIN_PLUCKS = 2            # fewer heard than this: no reading
 
 
 def _smooth(x, n):
@@ -23,6 +24,12 @@ def _smooth(x, n):
         return x
     k = np.ones(n) / n
     return np.convolve(x, k, mode="same")
+
+
+def _running_median(x, n):
+    h = n // 2
+    pad = np.pad(x, h, mode="edge")
+    return np.array([np.median(pad[i:i + n]) for i in range(len(x))])
 
 
 def _spectrum(seg, fs, nfft):
@@ -34,41 +41,55 @@ def _spectrum(seg, fs, nfft):
     return np.fft.rfftfreq(nfft, 1.0 / fs), p
 
 
-def steady_lines(axes, fs, quiet=False):
-    """Mask function for spectral lines that are there all the time (fans, motors).
-    quiet: the recording has no plucks in it (a background recording)."""
-    seg = 1 << int(math.ceil(math.log2((0.25 if quiet else 0.5) * fs)))
-    n = len(axes[0])
-    if n < 4 * seg:
+def _background(axes, fs, n, nfft, pct):
+    """Spectrum of what is there all the time (fans, motors, noise) for windows of n
+    samples: the pct-th percentile over overlapping windows."""
+    total = len(axes[0])
+    if total < n:
         return None
-    specs = []
-    for k in range(0, n - seg, seg // 2):
-        specs.append(_spectrum([a[k:k + seg] for a in axes], fs, seg)[1])
-    # a line is there in (nearly) every segment; plucks are not. Plucks a second
-    # apart ring through most segments, so a quiet recording is the better guide.
-    med = np.percentile(np.array(specs), 50 if quiet else 20, axis=0)
-    f = np.fft.rfftfreq(seg, 1.0 / fs)
-    floor = _smooth(med, int(20.0 / (f[1] - f[0])) | 1)
-    hot = _smooth((med > 8.0 * floor).astype(float), 3) > 0
+    specs = [_spectrum([a[k:k + n] for a in axes], fs, nfft)[1]
+             for k in range(0, total - n + 1, max(1, n // 4))]
+    return np.percentile(np.array(specs), pct, axis=0)
+
+
+def steady_lines(axes, fs):
+    """Mask function for strong spectral lines in a recording without plucks."""
+    seg = 1 << int(math.ceil(math.log2(0.25 * fs)))
+    nfft = 4 * seg
+    bg = _background(axes, fs, seg, nfft, 50)
+    if bg is None:
+        return None
+    f = np.fft.rfftfreq(nfft, 1.0 / fs)
+    df = f[1] - f[0]
+    floor = _running_median(bg, int(40.0 / df) | 1)          # +-20 Hz
+    hot = bg > 4.0 * floor
+    hot = np.convolve(hot.astype(float), np.ones(int(3.0 / df) | 1), mode="same") > 0
 
     def mask(freqs):
         return np.interp(freqs, f, hot.astype(float)) > 0.0
     return mask
 
 
-def find_plucks(axes, fs, lo, hi, mask):
-    """Onset indices of the plucks: the energy in the belt band jumps up."""
-    xb = []
+def _band(axes, fs, lo, hi, mask):
+    out = []
     for a in axes:
         spec = np.fft.rfft(a - a.mean())
         f = np.fft.rfftfreq(len(a), 1.0 / fs)
         keep = (f >= lo) & (f <= hi)
         if mask is not None:
             keep &= ~mask(f)
-        xb.append(np.fft.irfft(np.where(keep, spec, 0), len(a)))
-    env = _smooth(np.sqrt(sum(x * x for x in xb)), max(1, int(0.01 * fs)))
-    base = float(np.median(env)) or 1e-9
-    thr = max(4.0 * base, 0.15 * float(env.max()))
+        out.append(np.fft.irfft(np.where(keep, spec, 0), len(a)))
+    return _smooth(np.sqrt(sum(x * x for x in out)), max(1, int(0.01 * fs)))
+
+
+def find_plucks(axes, fs, lo, hi, mask, base=None):
+    """Onset indices of the plucks: the energy in the band jumps up.
+    base: the band level without plucks (from a quiet recording), if there is one."""
+    env = _band(axes, fs, lo, hi, mask)
+    if base is None:
+        base = float(np.percentile(env, 10))
+    base = base or 1e-9
+    thr = max(5.0 * base, 0.1 * float(env.max()))
     # an onset: above the threshold AND a sharp rise (not the tail of the last pluck)
     onsets, i, n = [], 0, len(env)
     dead, back = int(DEAD * fs), max(1, int(0.04 * fs))
@@ -83,6 +104,38 @@ def find_plucks(axes, fs, lo, hi, mask):
     return onsets
 
 
+def _peak(f, p, k, df):
+    """Parabolic peak position around bin k (on the log spectrum)."""
+    if 0 < k < len(p) - 1:
+        y0, y1, y2 = np.log(p[k - 1:k + 2] + 1e-30)
+        den = y0 - 2 * y1 + y2
+        if den < 0:
+            return float(f[k] + 0.5 * (y0 - y2) / den * df)
+    return float(f[k])
+
+
+def pluck_freq(f, p, df, lo, hi):
+    """Belt frequency from one pluck's spectrum (background already taken off), or None.
+    The carriage feels the belt at its tone and at twice it (the pull changes twice
+    per swing); either can be the stronger, so a peak with a smaller one at exactly
+    half its frequency is the second harmonic."""
+    sel = np.flatnonzero((f >= lo) & (f <= hi))
+    if not len(sel) or p[sel].max() <= 0:
+        return None
+    k = int(sel[np.argmax(p[sel])])
+    fk = _peak(f, p, k, df)
+    half = np.flatnonzero((f >= max(lo, 0.49 * fk)) & (f <= 0.51 * fk))
+    if len(half):
+        j = int(half[np.argmax(p[half])])
+        if p[j] > 0.05 * p[k] and p[j] >= p[max(0, j - 1)] and p[j] >= p[min(len(p) - 1, j + 1)]:
+            fj = _peak(f, p, j, df)
+            if abs(2 * fj - fk) <= 0.004 * fk + 2 * df:      # exactly half: a harmonic
+                k, fk = j, fj
+    if fk < lo + 2 * df or fk > hi - 2 * df:
+        return None                   # at the edge of what is searched: not a belt reading
+    return fk
+
+
 def analyse(t, ax, ay, az, target=None, expect=None, quiet=None):
     """Belt frequency from a recording with several plucks. quiet: (ax, ay, az) of a
     short recording without plucks, to tell fans and motors from the belt.
@@ -92,73 +145,66 @@ def analyse(t, ax, ay, az, target=None, expect=None, quiet=None):
     if len(t) < 100:
         return {"freq": None, "plucks": [], "used": 0, "note": "no data from the accelerometer"}
     fs = (len(t) - 1) / (t[-1] - t[0])
-    lo, hi = BAND[0], min(BAND[1], 0.45 * fs)
-    if target:
-        lo, hi = max(lo, 0.45 * target), min(hi, 1.7 * target)
-    mask = None
-    if quiet is not None and len(quiet[0]) > 100:
-        mask = steady_lines([np.asarray(a, float) for a in quiet], fs, quiet=True)
-    if mask is None:
-        mask = steady_lines(axes, fs)
-    onsets = find_plucks(axes, fs, lo, hi, mask)
+    lo, hi = SEARCH[0], min(SEARCH[1], 0.45 * fs)
+    q = None
+    if quiet is not None and len(quiet[0]) > int(0.5 * fs):
+        q = [np.asarray(a, float) for a in quiet]
+    mask = steady_lines(q, fs) if q is not None else None
+    base = None
+    if q is not None:
+        base = float(np.median(_band(q, fs, lo, hi, mask)))
+    onsets = find_plucks(axes, fs, lo, hi, mask, base)
     if not onsets:
         return {"freq": None, "plucks": [], "used": 0, "note": "no pluck heard"}
-    nfft = 1 << int(math.ceil(math.log2(8 * fs)))       # ~0.125 Hz bins after zero padding
     win = int(WINDOW * fs)
+    nfft = 1 << int(math.ceil(math.log2(8 * fs)))       # ~0.125 Hz bins after zero padding
+    f = np.fft.rfftfreq(nfft, 1.0 / fs)
+    df = f[1] - f[0]
+    bgs = {}
     freqs = []
     for j, on in enumerate(onsets):
         a0 = on + int(SKIP * fs)
         a1 = min(a0 + win, len(t), (onsets[j + 1] - int(0.01 * fs)) if j + 1 < len(onsets) else len(t))
-        if a1 - a0 < int(0.15 * fs):
+        n = a1 - a0
+        if n < int(0.15 * fs):
             continue
-        f, p = _spectrum([a[a0:a1] for a in axes], fs, nfft)
-        sel = (f >= lo) & (f <= hi)
-        if mask is not None:
-            sel &= ~mask(f)
-        if not sel.any():
-            continue
-        fs_, ps = f[sel], p[sel]
-        k = int(np.argmax(ps))
-        # a loose belt: its 2nd harmonic may sit near the target; prefer the fundamental
-        half = (fs_ > 0.47 * fs_[k]) & (fs_ < 0.53 * fs_[k])
-        if half.any() and ps[half].max() > 0.3 * ps[k]:
-            k = int(np.flatnonzero(half)[np.argmax(ps[half])])
-        if 0 < k < len(ps) - 1 and fs_[k + 1] - fs_[k - 1] < 3 * (f[1] - f[0]):
-            y0, y1, y2 = np.log(ps[k - 1:k + 2] + 1e-30)     # parabolic peak on the log spectrum
-            d = 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2) if (y0 - 2 * y1 + y2) else 0.0
-            freqs.append(float(fs_[k] + d * (f[1] - f[0])))
-        else:
-            freqs.append(float(fs_[k]))
-    if not freqs:
-        return {"freq": None, "plucks": [], "used": 0, "note": "plucks too short or too close together"}
+        p = _spectrum([a[a0:a1] for a in axes], fs, nfft)[1]
+        # take off what is there without a pluck (same window length), with a margin
+        n = int(round(n / (0.05 * fs))) * int(0.05 * fs) or n
+        if n not in bgs:
+            src = q if q is not None and len(q[0]) >= n else axes
+            bgs[n] = _background(src, fs, n, nfft, 50 if src is q else 20)
+        if bgs[n] is not None:
+            p = np.maximum(p - 2.0 * bgs[n], 0.0)
+        fr = pluck_freq(f, p, df, lo, hi)
+        if fr is not None:
+            freqs.append(fr)
     if expect:
         freqs = freqs[:expect]
+    if len(freqs) < MIN_PLUCKS:
+        return {"freq": None, "plucks": [round(x, 1) for x in freqs], "used": len(freqs),
+                "note": "only %d clear pluck heard" % len(freqs) if freqs else "no clear pluck heard"}
     med = float(np.median(freqs))
-    good = [f for f in freqs if abs(f - med) <= max(3.0, 0.05 * med)]
+    good = [x for x in freqs if abs(x - med) <= max(3.0, 0.05 * med)]
+    if len(good) < MIN_PLUCKS:
+        return {"freq": None, "plucks": [round(x, 1) for x in freqs], "used": len(good),
+                "note": "the plucks disagree"}
     note = ""
     if len(good) < len(freqs):
         note = "%d pluck(s) left out (far from the others)" % (len(freqs) - len(good))
-    return {"freq": round(float(np.mean(good)), 1), "plucks": [round(f, 1) for f in freqs],
+    return {"freq": round(float(np.mean(good)), 1), "plucks": [round(x, 1) for x in freqs],
             "used": len(good), "note": note}
-
-
-def advice(freq, target, tol=2.0):
-    if freq is None or not target:
-        return ""
-    d = freq - target
-    if abs(d) <= tol:
-        return "on target"
-    return "%.0f Hz %s, %s" % (abs(d), "low" if d < 0 else "high", "tighten" if d < 0 else "loosen")
 
 
 _EIGHTHS = {1: "1/8", 2: "1/4", 3: "3/8", 4: "1/2", 5: "5/8", 6: "3/4", 7: "7/8", 8: "1"}
 
 
-def _turn_text(t):
-    n = int(round(abs(t) * 8))
+def _told(t):
+    """The turn as told to the user (eighths of a turn; 0: less than 1/8) and its text."""
+    n = min(8, int(round(abs(t) * 8)))
     if n < 1:
-        return "a tiny bit (less than 1/8 turn)"
-    return "about %s turn" % _EIGHTHS[min(n, 8)]
+        return 0.0, "a tiny bit (less than 1/8 turn)"
+    return math.copysign(n / 8.0, t), "about %s turn" % _EIGHTHS[n]
 
 
 def plan(b):
@@ -182,7 +228,9 @@ def plan(b):
         own, other = (fa, fb) if last["belt"] == "A" else (fb, fa)
         p_own, p_other = (last["A"], last["B"]) if last["belt"] == "A" else (last["B"], last["A"])
         d_own, d_other = own - p_own, other - p_other
-        if last["turns"] * d_own > 0 and abs(d_own) > 0.5:
+        # learn only from a real turn that moved the belt the way it should, by more
+        # than the scatter between plucks
+        if last["turns"] and last["turns"] * d_own > 0 and abs(d_own) > 1.5:
             k_new = min(100.0, max(2.0, d_own / last["turns"]))
             k = k_new if k is None else 0.5 * (k + k_new)
             c = 0.5 * (c + min(0.8, max(0.0, d_other / d_own)))
@@ -206,14 +254,15 @@ def plan(b):
         belt, d = ("A", da) if abs(da) >= abs(db) else ("B", db)
         t = (-0.25 if d > 0 else 0.25) * (2 if abs(d) >= 8 else 1)
         how = "a little (about 1/4 turn)" if abs(t) < 0.5 else "about 1/2 turn"
+        sign = t
     else:
         # turns on A and B that would bring both to the target, given the coupling
         det = 1.0 - c * c
         ta = (-da + c * db) / (k * det)
         tb = (-db + c * da) / (k * det)
         belt, t = ("A", ta) if abs(ta) >= abs(tb) else ("B", tb)
-        t = max(-1.0, min(1.0, t))
-        how = _turn_text(t)
+        sign = t
+        t, how = _told(max(-1.0, min(1.0, t)))
     upd["last"] = {"belt": belt, "turns": t, "A": fa, "B": fb}
     return ("%s belt %s %s, then measure both again"
-            % ("Tighten" if t > 0 else "Loosen", belt, how)), upd
+            % ("Tighten" if sign > 0 else "Loosen", belt, how)), upd

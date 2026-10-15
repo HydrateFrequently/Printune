@@ -18,6 +18,8 @@
 # noise: 30                          # mm/s^2 rms
 # belt_a: 96                         # Hz, starting belt tones
 # belt_b: 91
+# harmonic_a: 1.5                   # belt A shows mostly at twice its tone
+# harmonic_b: 0.4
 #
 # [resonance_tester]
 # accel_chip: sim_accel
@@ -112,23 +114,26 @@ class SimClient(adxl345.AccelQueryHelper):
                 r += s * (base_excited(a, f, z) - a)
             out.append(a + r + np.random.normal(0.0, c.noise, n))
         out.append(az + 9806.65 + np.random.normal(0.0, c.noise, n))
-        # belt plucks: the belt rings at its tone (and a little at twice it) and pulls
-        # the carriage along its diagonal; the knock of the finger rings the frame
-        for pt, belt, freq, amp in c.plucks:
+        # belt plucks: the swinging belt pulls the carriage sideways at its tone, and
+        # along the belt at twice it (the pull changes twice per swing; either can be
+        # the stronger). The knock of the finger rings the frame.
+        for pt, belt, freq, amp, h2 in c.plucks:
             if pt > t1 or pt + 6 * PLUCK_DECAY < t0:
                 continue
             i0 = int(np.searchsorted(t, pt))
             tt = t[i0:] - pt
             env = np.exp(-tt / PLUCK_DECAY) * np.minimum(1.0, tt / 0.004)
-            ring = amp * env * (np.sin(2 * math.pi * freq * tt) + 0.25 * np.sin(4 * math.pi * freq * tt))
-            sx, sy = (0.71, 0.71) if belt == "A" else (0.71, -0.71)
+            side = amp * env * np.sin(2 * math.pi * freq * tt)
+            along = amp * h2 * env * env * np.sin(4 * math.pi * freq * tt)
+            ux, uy = (0.71, 0.71) if belt == "A" else (0.71, -0.71)     # along the belt
+            vx, vy = -uy, ux                                             # across it
             knock = np.zeros(min(n - i0, int(RATE)))      # the frame rings out within a second
             knock[:int(0.003 * RATE)] = 4.0 * amp
-            for k, (s_, modes) in enumerate(((sx, c.x_modes), (sy, c.y_modes))):
+            for k, (u_, v_, modes) in enumerate(((ux, vx, c.x_modes), (uy, vy, c.y_modes))):
                 frame = sum(m[2] * (base_excited(knock, m[0], m[1]) - knock) for m in modes)
-                out[k][i0:] += s_ * ring
-                out[k][i0:i0 + len(knock)] += s_ * frame
-            out[2][i0:] += 0.2 * ring
+                out[k][i0:] += u_ * along + 0.5 * v_ * side
+                out[k][i0:i0 + len(knock)] += u_ * frame
+            out[2][i0:] += 0.5 * side
         self.msgs = [{"data": list(zip(t.tolist(), out[0].tolist(), out[1].tolist(), out[2].tolist()))}]
         logging.info("sim_accel: %d samples over %.1f s from %d moves", n, t1 - t0, len(self.moves))
 
@@ -145,6 +150,9 @@ class SimAccel:
                       "B": config.getfloat("belt_b", 91.0, above=0.0)}
         self.plucks = []
         self.clients = []
+        # how strongly each belt shows at twice its tone (differs per printer)
+        self.h2 = {"A": config.getfloat("harmonic_a", 1.5, minval=0.0),
+                   "B": config.getfloat("harmonic_b", 0.4, minval=0.0)}
         random.seed()
         adxl345.AccelCommandHelper(config, self)
         gcode = self.printer.lookup_object("gcode")
@@ -167,7 +175,7 @@ class SimAccel:
         # a person never plucks exactly the same way twice
         freq = self.belts[belt] + random.uniform(-0.3, 0.3)
         amp = PLUCK_ACCEL * random.uniform(0.6, 1.3)
-        self.plucks.append((print_time, belt, freq, amp))
+        self.plucks.append((print_time, belt, freq, amp, self.h2[belt]))
         self.plucks = [p for p in self.plucks if p[0] > print_time - 120.0]
 
     def cmd_SIM_PLUCK(self, gcmd):

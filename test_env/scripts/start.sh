@@ -50,10 +50,13 @@ fi
 # configs from before the rename (ECAL) include files that no longer exist
 sed -i 's/^\[include ellis_calibration.cfg\]/[include printune.cfg]/; s/^\[include ecal_export.cfg\]/[include printune_plugin.cfg]/' $cfg/printer.cfg
 # add an include, above Kalico's SAVE_CONFIG block if there is one
+# (an include that an older start.sh put below that block is moved up)
 add_include() {
-  grep -q "^\[include $1\]" $cfg/printer.cfg && return
-  awk -v inc="[include $1]" '!done && /^#\*# <-+ SAVE_CONFIG -+>/ {print inc; print ""; done=1} {print} END {if (!done) print inc}' \
-    $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
+  awk -v inc="[include $1]" '
+    /^#\*# <-+ SAVE_CONFIG -+>/ { if (!have) print inc "\n"; have = 1; below = 1 }
+    $0 == inc { if (below || have) next; have = 1 }
+    { print }
+    END { if (!have) print inc }' $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
 }
 add_include printune_plugin.cfg
 # Simulated accelerometer, input shaper and Shake&Tune: ACCEL=0 / SHAKETUNE=0 make

@@ -35,7 +35,6 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import printune_gen as gen  # noqa: E402
-import printune_belts as belts  # noqa: E402
 
 # Orca's filament preset keys (Preset.cpp, s_Preset_filament_options, 2.4.x),
 # without inherits/compatible_* (set below) and bed_type (a process setting).
@@ -297,6 +296,8 @@ class Printune:
     def cmd_PRINTUNE_BELTS_START(self, gcmd):
         if self.printer.lookup_object("resonance_tester", None) is None:
             raise gcmd.error("Printune: belt tension needs an accelerometer ([resonance_tester])")
+        if not self._tools()["corexy"]:
+            raise gcmd.error("Printune: the belt step is made for CoreXY printers")
         target = gcmd.get_float("TARGET", self.belt_target, minval=20., maxval=400.)
         plucks = gcmd.get_int("PLUCKS", 5, minval=3, maxval=5)
         self.belt_plucks = plucks
@@ -308,6 +309,16 @@ class Printune:
     cmd_PRINTUNE_BELT_LISTEN_help = "Printune: record plucks of one belt (BELT=A|B) and find its frequency"
 
     def cmd_PRINTUNE_BELT_LISTEN(self, gcmd):
+        try:
+            self._belt_listen(gcmd)
+        except Exception:
+            if gcmd.get_int("UI", 0):
+                # don't leave a "pluck now" prompt up without a button
+                self.gcode.respond_raw("// action:prompt_end")
+            raise
+
+    def _belt_listen(self, gcmd):
+        import printune_belts as belts      # numpy: only needed here
         if not self.belts:
             raise gcmd.error("Printune: run _PRINTUNE_BELTS_START first")
         belt = gcmd.get("BELT", "A").upper()
@@ -348,7 +359,10 @@ class Printune:
                             quiet=[[s[i] for s in quiet] for i in (1, 2, 3)])
         b = dict(self.belts)                 # a new object: status updates send what changed
         b[belt] = res
-        heard = sorted(set(b.get("heard", [])) | {belt}) if res["freq"] is not None else b.get("heard", [])
+        heard = set(b.get("heard", [])) - {belt}
+        if res["freq"] is not None:
+            heard.add(belt)
+        heard = sorted(heard)
         if heard == ["A", "B"]:
             # both belts measured since the last instruction: the next one
             b["round"] += 1
@@ -375,8 +389,8 @@ class Printune:
             st = self.printer.lookup_object("configfile").get_status(self.reactor.monotonic())
         except Exception:
             return {}
+        # what printer.cfg holds now (not an earlier, unsaved measurement)
         cur = dict(st.get("settings", {}).get("input_shaper", {}))
-        cur.update(st.get("save_config_pending_items", {}).get("input_shaper", {}))
         out = {}
         for ax in ("x", "y"):
             if cur.get("shaper_freq_" + ax):
@@ -385,6 +399,14 @@ class Printune:
         return out
 
     def cmd_PRINTUNE_SHAPER_RUN(self, gcmd):
+        try:
+            self._shaper_run(gcmd)
+        except Exception:
+            if gcmd.get_int("UI", 0):
+                self.gcode.respond_raw("// action:prompt_end")
+            raise
+
+    def _shaper_run(self, gcmd):
         if self.printer.lookup_object("resonance_tester", None) is None:
             raise gcmd.error("Printune: input shaper needs an accelerometer ([resonance_tester])")
         before = self._saved_shaper()
@@ -457,7 +479,7 @@ class Printune:
         for f in new:
             rel = os.path.relpath(f, self.cfg_dir)
             if not rel.startswith(".."):
-                graphs.append(rel)
+                graphs.append(rel)        # the page can only show files under the config folder
             gcmd.respond_info("Printune: Shake&Tune graph: %s" % f)
         self.graphs = graphs
         if not new:
