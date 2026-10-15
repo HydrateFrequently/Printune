@@ -38,7 +38,7 @@ To avoid breaking your printer, every change has been tried on:
 - **A G-code checker** (`tools/check_gcode.py`) that replays every generated session and looks for moves off the bed, the nozzle or toolhead hitting finished prints, the X gantry passing over prints taller than its measured height, and extrusion onto other objects. It found none across the fleet.
 - **A safety gate:** nothing prints until you have entered your own measured machine geometry and accepted the risk.
 - **The installer** on a clean virtual printer.
-- **Recordings from a real printer's accelerometers** (belt plucks and taps) for the belt tension module, checked against a professional field recorder as the reference (Zoom H5 with the XYH-5 X/Y stereo microphone, the kind used for journalism and broadcast). The averages agreed within about 0.1 Hz.
+- **Recordings from a real printer's accelerometers** (belt plucks and taps) for the belt tension module, checked against a professional field recorder as the reference (Zoom H5 with the XYH-5 X/Y stereo microphone). The averages agreed within about 0.1 Hz.
 - **OrcaSlicer 2.4.2** (from the command line) importing the exported presets.
 - **Reviews by separate AI agents** looking for mistakes in each finished feature.
 
