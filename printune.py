@@ -14,10 +14,12 @@
 # it was sliced with, including the filament preset's name and its parent.
 # _PRINTUNE_EXPORT reads that block from the session file, takes the filament
 # settings, puts the picked values on top (flow ratio, pressure advance,
-# retraction, nozzle temperature, fan and minimum layer time, max volumetric speed) and writes one
-# JSON file that Orca imports
+# retraction, nozzle temperature, fan and minimum layer time, bridge fan, max volumetric speed)
+# and writes one JSON file that Orca imports
 # with File > Import > Import Configs. It always writes a new preset,
 # "<filament> (Printune)", so it never replaces one of your own presets.
+# The bridge test's speed and flow are process settings: they go into a second, small JSON file,
+# an Orca process preset holding just those two values.
 # A session made by the wizard carries a small block of its own with the name you
 # typed, so its preset gets exactly that name.
 #
@@ -243,6 +245,7 @@ class Printune:
                 k, v = line.split("=", 1)
                 self.orca[k.strip()] = v.strip()
         self.last_file = self.last_name = self.last_rel = ""
+        self.last_proc_name = self.last_proc_rel = ""
         self.state, self.message = "idle", ""
         self.session = {}
         self.proc = None
@@ -288,7 +291,8 @@ class Printune:
         if self.soak is not None:
             soak.update(self.soak["status"])
         return {"last_file": self.last_file, "last_name": self.last_name,
-                "last_rel": self.last_rel, "state": self.state, "message": self.message,
+                "last_rel": self.last_rel, "last_proc_name": self.last_proc_name,
+                "last_proc_rel": self.last_proc_rel, "state": self.state, "message": self.message,
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
                 "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
@@ -702,6 +706,11 @@ class Printune:
                     cfg["retraction_speed"], cfg["deretraction_speed"] = fnum(rs, 1), fnum(ds, 1)
                     opts["set_ret"] = "1"
                     reused.append("retraction %s mm" % fnum(rl, 2))
+                # the bridge test starts from the fan the cooling test picked
+                fan = fnum_or(pval(prev, "fan_max_speed"))
+                if fan is not None and 0 <= fan <= 100:
+                    opts["bridge_base"] = "%d" % round(fan)
+                    reused.append("fan %d %%" % round(fan))
         start = []
         if soak:
             start.append("_PRINTUNE_SOAK BED=%d NOZZLE=%d" % (bed, mid))
@@ -965,6 +974,7 @@ class Printune:
         # SOFT=1 (used by the Printune summary): report problems instead of
         # raising, so the results prompt still shows
         self.last_file = self.last_name = self.last_rel = ""
+        self.last_proc_name = self.last_proc_rel = ""
         try:
             try:
                 self._export(gcmd)
@@ -1054,6 +1064,10 @@ class Printune:
         if "cool" in tested and float(S.get("cool_lt", 0)) > 0:
             put("slow_down_layer_time", fnum(S["cool_lt"], 1), "minimum layer time")
             put("slow_down_for_layer_cooling", "1", "slow down for cooling")
+        if "bridge" in tested and int(S.get("br_fan", -1)) >= 0:
+            # Orca's "Overhangs and external bridges fan speed" (used when above the normal fan)
+            put("enable_overhang_bridge_fan", "1", "overhang and bridge fan on")
+            put("overhang_fan_speed", str(int(S["br_fan"])), "bridge fan")
         if "mvs" in tested and float(S.get("mvs", 0)) > 0:
             put("filament_max_volumetric_speed", fnum(S["mvs"], 1), "max volumetric speed")
         if "pa" in tested:
@@ -1079,8 +1093,79 @@ class Printune:
                 preset["filament_start_gcode"] = ["\n".join(lines)]
                 keys.add("filament_start_gcode")
                 changed.append("filament start G-code: SET_RETRACTION line")
-        if not changed:
+        # the bridge test's speed and flow: process settings, a process preset of their own
+        proc = {}
+        if "bridge" in tested and float(S.get("br_speed", 0)) > 0:
+            proc["bridge_speed"] = fnum(S["br_speed"], 1)
+        if "bridge" in tested and float(S.get("br_flow", 0)) > 0:
+            proc["bridge_flow"] = fnum(S["br_flow"], 3)
+        if not changed and not proc:
             raise gcmd.error("_PRINTUNE_EXPORT: nothing was picked in this session")
+        m = re.search(r"OrcaSlicer (\d+)\.(\d+)\.(\d+)", head)
+        version = "%s.%s.%s.0" % m.groups() if m else "2.0.0.0"
+        if changed:
+            self._export_filament(gcmd, cfg, path, preset, name, fid, keys, changed, version)
+        if proc:
+            self._export_process(gcmd, cfg, groups, name, proc, version)
+
+    def _export_process(self, gcmd, cfg, groups, fname_base, values, version):
+        """An Orca process preset holding the bridge speed and flow: on the sliced process preset's
+        system parent when the session was sliced in Orca, else a preset of its own (Orca fills
+        in its defaults for the rest)."""
+        pid = first(cfg, "print_settings_id")
+        parent = groups[0] if len(groups) == 3 else ""
+        if first(cfg, "printune_named") == "1" or not pid:
+            # made by the wizard: no process preset was sliced
+            name, inherits = fname_base + " bridges", ""
+        elif pid.endswith(SUFFIX):
+            name, inherits = pid, parent
+        elif parent:
+            name, inherits = pid + SUFFIX, parent
+        elif " @" in pid:
+            base, vendor = pid.rsplit(" @", 1)
+            name, inherits = base + ("" if vendor == "System" else " " + vendor) + SUFFIX, pid
+        else:
+            name, inherits = pid + SUFFIX, ""
+        # Orca's minimal user process preset: name, inherits, version, print_settings_id (this
+        # marks it as a process preset on import), and the changed settings. bridge_speed is a
+        # per-extruder-variant list, bridge_flow a single value.
+        nvar = max(1, len(parse_value("print_extruder_variant", cfg["print_extruder_variant"]))
+                   if "print_extruder_variant" in cfg else 1)
+        out = os.path.join(self.out_dir, re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json")
+        preset = {"type": "process", "name": name, "inherits": inherits, "from": "User",
+                  "instantiation": "true"}
+        try:
+            with open(out) as f:
+                old = json.load(f)
+            if isinstance(old, dict) and old.get("type") == "process" and old.get("name") == name:
+                preset = old          # an earlier bridge test of this preset: keep what it had
+        except (OSError, ValueError):
+            pass
+        if "bridge_speed" in values:
+            preset["bridge_speed"] = [values["bridge_speed"]] * nvar
+        if "bridge_flow" in values:
+            preset["bridge_flow"] = values["bridge_flow"]
+        preset["print_settings_id"] = name
+        preset["version"] = version
+        os.makedirs(self.out_dir, exist_ok=True)
+        with open(out + ".tmp", "w") as f:
+            json.dump(preset, f, indent=4)
+        os.replace(out + ".tmp", out)
+        rel = os.path.relpath(out, os.path.dirname(self.cfg_dir))
+        self.last_proc_name = name
+        self.last_proc_rel = out if rel.startswith("..") else rel
+        logging.info("_PRINTUNE_EXPORT wrote %s (%s)", out, values)
+        gcmd.respond_info(
+            "Printune: Orca process preset \"%s\" written to %s\n%s\n"
+            "Import it the same way (File > Import > Import Configs); it shows up under the process presets. "
+            "It holds only these values, on top of %s. To keep your own process settings, type them into "
+            "your process preset instead." % (
+                name, self.last_proc_rel,
+                "; ".join("%s %s" % ({"bridge_speed": "bridge speed", "bridge_flow": "bridge flow"}[k],
+                                     v + (" mm/s" if k == "bridge_speed" else "")) for k, v in sorted(values.items())),
+                ("\"%s\"" % inherits) if inherits else "Orca's defaults"))
+
+    def _export_filament(self, gcmd, cfg, path, preset, name, fid, keys, changed, version):
         fname = re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json"
         out = os.path.join(self.out_dir, fname)
         # An earlier export of this preset (the Tuning Wizard before Advanced tuning, or the other
@@ -1102,8 +1187,7 @@ class Printune:
         except (OSError, ValueError):
             pass
         preset["filament_settings_id"] = [name]
-        m = re.search(r"OrcaSlicer (\d+)\.(\d+)\.(\d+)", head)
-        preset["version"] = "%s.%s.%s.0" % m.groups() if m else "2.0.0.0"
+        preset["version"] = version
         # one note line per session (a session exports again at each savepoint: replace its line)
         sid = "#%d" % int(os.path.getmtime(path))
         notes = [l for l in str(preset.get("filament_notes", [""])[0]).split("\n")

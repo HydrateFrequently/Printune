@@ -211,8 +211,14 @@ input[type=text], input[type=number] {
       </div>
     </div>
     <div id="pResults" hidden>
-      <a class="btn primary block big" id="dlBtn" href="#" download style="min-height:64px;font-size:20px">Download Orca preset</a>
-      <p class="help" id="dlHelp"></p>
+      <div id="dlFil">
+        <a class="btn primary block big" id="dlBtn" href="#" download style="min-height:64px;font-size:20px">Download Orca preset</a>
+        <p class="help" id="dlHelp"></p>
+      </div>
+      <div id="dlProc" hidden style="margin-top:14px">
+        <a class="btn primary block big" id="dlProcBtn" href="#" download style="min-height:64px;font-size:20px">Download process preset</a>
+        <p class="help" id="dlProcHelp"></p>
+      </div>
     </div>
     <div class="pfooter" id="pFooter"></div>
     <button type="button" class="block" id="doneBtn" hidden style="margin-top:12px">Done</button>
@@ -407,6 +413,8 @@ const TESTS = [
     desc: "Towers that show which settings string the least." },
   { key: "cool", label: "Cooling (fan & layer time)", stage: "Cooling",
     desc: "Overhang blocks pick one steady fan %; a cone shows the shortest layer time." },
+  { key: "bridge", label: "Bridges (fan, speed, flow)", stage: "Bridges",
+    desc: "Strips bridging 20, 40 and 60 mm, in three short passes: fan, then speed, then flow." },
   { key: "mvs", label: "Max volumetric flow", stage: "Max flow",
     desc: "A thin tower printed faster and faster: how much plastic the hotend can melt." },
 ];
@@ -819,14 +827,28 @@ function renderResultsExtras() {
   const res = isResultsPrompt();
   const rel = pt().last_rel || "";
   const name = pt().last_name || "";
+  const prel = pt().last_proc_rel || "";
+  const pname = pt().last_proc_name || "";
   const canDl = res && rel && !rel.startsWith("/");
-  show("pResults", !!canDl);
+  const canProc = res && prel && !prel.startsWith("/");
+  show("pResults", !!(canDl || canProc));
+  show("dlFil", !!canDl);
+  show("dlProc", !!canProc);
+  const href = (r) => "/server/files/" + r.split("/").map(encodeURIComponent).join("/");
+  // two files when the bridge test ran: say which one goes where
+  $("dlBtn").textContent = canProc ? "Download filament preset" : "Download Orca preset";
   if (canDl) {
-    const href = "/server/files/" + rel.split("/").map(encodeURIComponent).join("/");
-    $("dlBtn").setAttribute("href", href);
+    $("dlBtn").setAttribute("href", href(rel));
     $("dlBtn").setAttribute("download", (name || "printune") + ".json");
     $("dlHelp").textContent = "Orca: File > Import > Import Configs, pick the file. It shows up under your filaments as " +
       (name || "the preset name") + ".";
+  }
+  if (canProc) {
+    $("dlProcBtn").setAttribute("href", href(prel));
+    $("dlProcBtn").setAttribute("download", (pname || "printune process") + ".json");
+    $("dlProcHelp").textContent = "Bridge speed and flow are print settings, not filament settings. Import this file the same way: " +
+      "it shows up under your process presets as " + (pname || "the preset name") +
+      ", with only these two values set. Or type them into your own process preset.";
   }
   show("doneBtn", res);
   $("doneBtn").className = "block" + (res && !($("pResults").hidden) ? "" : " primary");
@@ -863,7 +885,7 @@ function makeStepper(name, opts) {
 }
 
 // ---------- form ----------
-const DEFAULT_PROCS = { wizard: ["squish", "pa", "em", "ret"], advanced: ["cool", "mvs"] };
+const DEFAULT_PROCS = { wizard: ["squish", "pa", "em", "ret"], advanced: ["cool", "bridge", "mvs"] };
 function procs() {
   const p = pt().procs;
   return p && Array.isArray(p.wizard) && Array.isArray(p.advanced) ? p : DEFAULT_PROCS;
@@ -1167,6 +1189,15 @@ function maybeSyntheticResults() {
   }
   if (tested.includes("cool") && Number(m.cool_lt) > 0) {
     items.push({ type: "text", text: "Minimum layer time: " + Number(m.cool_lt) + " s" });
+  }
+  if (tested.includes("bridge") && Number(m.br_fan) >= 0) {
+    items.push({ type: "text", text: "Bridge fan: " + Number(m.br_fan) + " % (Filament › Cooling › Overhangs and external bridges fan speed)" });
+  }
+  if (tested.includes("bridge") && Number(m.br_speed) > 0) {
+    items.push({ type: "text", text: "Bridge speed: " + Number(m.br_speed) + " mm/s (Process › Speed › Bridge › External)" });
+  }
+  if (tested.includes("bridge") && Number(m.br_flow) > 0) {
+    items.push({ type: "text", text: "Bridge flow: " + Number(m.br_flow) + " (Process › Quality › Bridge flow ratio)" });
   }
   if (tested.includes("mvs") && Number(m.mvs) > 0) {
     items.push({ type: "text", text: "Max volumetric speed: " + Number(m.mvs).toFixed(1) + " mm³/s (" +

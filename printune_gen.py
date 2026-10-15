@@ -15,7 +15,9 @@ Advanced tuning (option proc=advanced):
 
   1. Cooling             - overhang blocks, one per fan speed (fan %), then a cone whose layer
                            time falls with height (minimum layer time)
-  2. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
+  2. Bridges             - strips bridging 20/40/60 mm between pillars, in three passes: fan,
+                           then speed, then flow (Orca's external bridge settings)
+  3. Max volumetric flow - a single-wall spiral tower, flow rising in bands with height
 
 Between tests the printer pauses and the Printune page (or Mainsail/Fluidd)
 shows one button per tested value. The picked value is applied to every later
@@ -51,18 +53,19 @@ import re
 import shlex
 import sys
 
-VERSION = 7            # must match variable_version in printune.cfg
+VERSION = 8            # must match variable_version in printune.cfg
 
 # Every test in print order, and the procedures. A test moves between the Tuning Wizard and
 # Advanced tuning by moving its key between the two lists (the plugin, the menu and the page
 # read them from here).
 # The tallest test (the max flow tower) prints last: the gantry never passes over it.
-ORDER = ("squish", "pa", "em", "ret", "cool", "mvs")
-PROCS = {"wizard": ("squish", "pa", "em", "ret"), "advanced": ("cool", "mvs")}
+ORDER = ("squish", "pa", "em", "ret", "cool", "bridge", "mvs")
+PROCS = {"wizard": ("squish", "pa", "em", "ret"), "advanced": ("cool", "bridge", "mvs")}
 # print order of the objects' sections (the gantry rule needs to know what prints first)
 SECTION_RANK = {"patches": 0, "patches_b": 1, "pa": 2, "pa_fine": 3, "em": 4, "em_fine": 5, "ret": 6,
-                "cool": 7, "cone": 8, "mvs": 9}
-SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "mvs": "mvs", "cool": "cool"}
+                "cool": 7, "cone": 8, "br_fan": 9, "br_speed": 10, "br_flow": 11, "mvs": 12}
+SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "mvs": "mvs", "cool": "cool",
+            "bridge": "bridge"}
 TITLE_WORD = {"wizard": "Printune", "advanced": "Advanced"}
 MARKER = "PRINTUNE"
 
@@ -122,6 +125,12 @@ DEFAULTS = {
     "wall_sequence": "inner wall/outer wall",
     "infill_wall_overlap": "15%",
     "top_bottom_infill_wall_overlap": "25%",
+    "bridge_speed": "25",
+    "bridge_flow": "1",
+    "thick_bridges": "0",
+    "bridge_line_width": "100%",
+    "bridge_density": "100%",
+    "bridge_acceleration": "50%",
     "extruder_clearance_radius": "65",
     "extruder_clearance_height_to_rod": "36",
     "gcode_flavor": "klipper",
@@ -175,9 +184,9 @@ END_GCODE = "PRINT_END"
 
 # Test options (not Orca settings). All can be set on the command line or in the object name.
 OPTIONS = {
-    "proc": "wizard",           # wizard (first layer, PA, flow, retraction) or advanced (cooling, max flow)
+    "proc": "wizard",           # wizard (first layer, PA, flow, retraction) or advanced (cooling, bridges, max flow)
     "set_ret": 0,               # 1: set firmware retraction to the profile's retraction at the start
-    "skip": "auto",             # comma list of: patches, pa, em, ret, mvs, cool; auto = the other procedure's
+    "skip": "auto",             # comma list of: patches, pa, em, ret, cool, bridge, mvs; auto = the other procedure's
     "patches_extra": 4,         # optional 2nd round of patches (0 = none)
     "pa": "0-0.08/0.005",       # direct drive range
     "pa_fine": "0.005/0.001",   # +-range/step around the pick, 0 = no fine pass
@@ -199,6 +208,11 @@ OPTIONS = {
     "cool_angles": "30-70/10",  # overhang angles of each block, bottom to top, degrees from vertical
     "cool_time": 0,             # cone layer time at the bottom, s; 0 = by filament type (PLA 16, ABS 26)
     "cool_pad": 0,              # blocks: layers slowed down to this layer time, s; 0 = by type (PLA 8, ABS 15)
+    "bridge_spans": "20,40,60", # bridge test: spans of each strip, left to right, mm (longest dropped if the bed is small)
+    "bridge_fans": "",          # fan pass, %; "" = 4 steps from the fan (the cooling pick, else bridge_base) to 100
+    "bridge_base": -1,          # the fan the bridges start from, %; -1 = the profile's fan_max_speed
+    "bridge_speeds": "",        # speed pass, mm/s; "" = the profile's bridge_speed x 0.6, 1, 1.5, 2
+    "bridge_flows": "0.85-1/0.05",  # flow pass: Orca's bridge_flow
     "mcr": 0.5,                 # the printer's minimum_cruise_ratio (the plugin sets it)
     "zv": 0,                    # max_z_velocity, 0 = max_velocity (the plugin sets it)
     "za": 0,                    # max_z_accel, 0 = max_accel (the plugin sets it)
@@ -264,6 +278,14 @@ class Settings:
                 r = float(v[:-1]) / 100.0 * self.v_outer if v.endswith("%") else float(v or 0)
                 self.v_overhang[i] = r if r > 0 else 0.0
         self.v_slow_min = _num(c.get("slow_down_min_speed", "10")) or 10.0
+        # Orca's external bridge settings (the bridge test tunes speed and flow; width, density and
+        # thick bridges stay as the profile has them)
+        self.v_bridge = _num(c["bridge_speed"]) or 25.0
+        self.br_flow = _num(c["bridge_flow"]) or 1.0
+        self.thick_bridges = _first(c["thick_bridges"]) in ("1", "true")
+        bw = _first(c["bridge_line_width"])
+        self.w_bridge = max(0.0, float(bw[:-1]) / 100.0 * self.nozzle if bw.endswith("%") else float(bw or 0))
+        self.br_density = (_num(c["bridge_density"]) / 100.0) or 1.0
         self.mvs = _num(c["filament_max_volumetric_speed"]) or 1e9
         # the printer's own limits (the plugin sets them from [printer])
         self.vmax = min(_num(c["machine_max_speed_x"]), _num(c["machine_max_speed_y"])) or 1e9
@@ -283,6 +305,9 @@ class Settings:
         self.a_sparse = self._acc("sparse_infill_acceleration", a0)
         self.a_first = self._acc("initial_layer_acceleration", a0)
         self.a_travel = self._acc("travel_acceleration", a0)
+        ba = _first(c["bridge_acceleration"])       # % of the outer wall acceleration
+        ba = float(ba[:-1]) / 100.0 * self.a_outer if ba.endswith("%") else float(ba or 0)
+        self.a_bridge = ba if ba > 0 else a0
 
         self.t_nozzle = _num(c["nozzle_temperature"])
         self.t_first = _num(c["nozzle_temperature_initial_layer"])
@@ -505,6 +530,23 @@ class Writer:
         self.g("G1 X%.3f Y%.3f E%.5f F%d" % (x, y, e, v * 60))
         self._t(L, v)
         self.paths.append((self.x, self.y, x, y, self.z, w, kind))
+        self.x, self.y = x, y
+        self.max_h = max(self.max_h, self.z)
+
+    def bridge(self, x, y, a, v, accel, w):
+        """Extrude a bridge line to (x, y) with cross-section a mm2 at v mm/s (the bridge test
+        checks v against the flow limit)."""
+        self.unlift()
+        self.unretract()
+        self.set_accel(accel)
+        L = math.hypot(x - self.x, y - self.y)
+        if L < 1e-6:
+            return
+        e = L * a / self.s.fil_area
+        self.e_total += e
+        self.g("G1 X%.3f Y%.3f E%.5f F%d" % (x, y, e, round(v * 60)))
+        self._t(L, v)
+        self.paths.append((self.x, self.y, x, y, self.z, w, "bridge"))
         self.x, self.y = x, y
         self.max_h = max(self.max_h, self.z)
 
@@ -1478,6 +1520,103 @@ def cone_layer_times(lines, pos, accel, plan):
     return out
 
 
+# ---- Bridges: strips that bridge 20/40/60 mm between pillars ----------------------------
+# One block per pass: pillar walls across the block, and a row of strips, front to back, one per
+# value, each bridging every gap between the walls. The walls print layer by layer, then the
+# bridge layer strip by strip (each with its own fan, speed or flow), then one solid layer on top
+# of each strip. Three passes (fan, speed, flow), each keeping the picks before it.
+BR_PILLAR_W = 5.0       # pillar wall thickness along the bridge (X), mm
+BR_D = 5.0              # strip width (Y), mm
+BR_GAP = 3.0            # between strips (Y), mm
+BR_PILLAR_H = 4.0       # pillar height: room under the bridge to sag, mm
+BR_ANCHOR = 2.0         # bridge lines reach this far onto each pillar, mm
+BR_COVER = 1            # solid layers on the bridge
+BR_FANS_N = 4           # fan pass strips when bridge_fans is not given
+BR_SPEED_F = (0.6, 1.0, 1.5, 2.0)   # speed pass: the profile's bridge speed times these
+BR_MODES = ("fan", "speed", "flow")
+
+
+def bridge_flow(s, ratio):
+    """(cross-section mm2, line width mm, line spacing mm) of an external bridge line at Orca's
+    bridge_flow = ratio, as LayerRegion::bridging_flow and Flow compute it:
+    thick_bridges on: a round thread of diameter (bridge_line_width or the nozzle) x sqrt(ratio),
+      spaced at the diameter + 0.05 mm;
+    off: the normal rounded-rectangle line (bridge_line_width, else the internal solid infill
+      width, at the layer height) with its area times ratio, at the line's normal spacing.
+    Either way the spacing is divided by bridge_density; the printer's flow (M221) applies on top."""
+    if s.thick_bridges:
+        d = (s.w_bridge or s.nozzle) * math.sqrt(ratio)
+        return math.pi * d * d / 4.0, d, (d + 0.05) / s.br_density
+    w = s.w_bridge or s.w_solid
+    return Writer.area(w, s.h) * ratio, w, spacing(w, s.h) / s.br_density
+
+
+class BridgeTest:
+    def __init__(self, s, spans, fans, speeds, flows, base, v_ref, pad):
+        self.s = s
+        self.spans = spans
+        self.fans = fans            # [] = from the fan at print time (_PRINTUNE_BRIDGE_FANS)
+        self.n_fans = len(fans) or BR_FANS_N
+        self.speeds = speeds
+        self.flows = flows
+        self.base = base            # the fan the bridges start from when nothing was picked, %
+        self.v_ref = v_ref          # bridge speed of the fan and flow passes, mm/s
+        self.pad = pad              # pillar layers are slowed down to take at least this long, s
+        n = max(2, int(math.ceil((BR_PILLAR_H - s.h1) / s.h - 1e-6)) + 1)
+        self.zs = [s.h1 + i * s.h for i in range(n)]            # pillar layers
+        self.zb = self.zs[-1] + s.h                             # the bridge layer
+        self.zc = [self.zb + (k + 1) * s.h for k in range(BR_COVER)]
+        self.height = self.zc[-1]
+        self.length = self.strip_length(spans)
+
+    @staticmethod
+    def strip_length(spans):
+        return (len(spans) + 1) * BR_PILLAR_W + sum(spans)
+
+    @staticmethod
+    def depth(n):
+        return n * BR_D + (n - 1) * BR_GAP
+
+    def labels(self, mode):
+        if mode == "fan":
+            return [str(i + 1) for i in range(self.n_fans)]
+        if mode == "speed":
+            return [fmt_val(v, 1) for v in self.speeds]
+        return [fmt_val(f * 100, 1) for f in self.flows]
+
+    def pillars(self, o):
+        """Pillar walls of block o, left to right, across all its strips."""
+        x, out = o.px, []
+        y0, y1 = o.strips[0], o.strips[-1] + BR_D
+        for k in range(len(self.spans) + 1):
+            out.append((x, y0, x + BR_PILLAR_W, y1))
+            if k < len(self.spans):
+                x += BR_PILLAR_W + self.spans[k]
+        return out
+
+    def draw_bridges(self, wr, o, i, ratio, v):
+        """The bridge layer of strip i: for each span, straight lines across the gap from pillar to
+        pillar, joined on the pillars (serpentine)."""
+        s = self.s
+        a, w, sp = bridge_flow(s, ratio)
+        n = max(1, int((BR_D - w) / sp + 1e-6) + 1)
+        yc = o.strips[i] + BR_D / 2
+        ys = [yc - (n - 1) * sp / 2 + j * sp for j in range(n)]
+        pil = self.pillars(o)
+        wr.g("; bridges, strip %d: flow %s = %.5f mm3/mm, %s mm/s, %d lines %.3f mm apart" % (
+            i + 1, fmt_val(ratio, 3), a, fmt_val(v, 1), n, sp))
+        for k in range(len(self.spans)):
+            xa = pil[k][2] - BR_ANCHOR
+            xb = pil[k + 1][0] + BR_ANCHOR
+            wr.travel(xa, ys[0])
+            wr.z_to(self.zb)
+            for j, y in enumerate(ys):
+                xe = xb if j % 2 == 0 else xa
+                wr.bridge(xe, y, a, v, s.a_bridge, w)
+                if j + 1 < n:
+                    wr.bridge(xe, ys[j + 1], a, v, s.a_bridge, w)   # along the pillar
+
+
 # --------------------------------------------------------------------------
 # Session
 # --------------------------------------------------------------------------
@@ -1556,9 +1695,56 @@ class Session:
             self.cool = CoolTest(s, fans, angles, t0, pad)
             if self.cool.top > s.max_z - 5:
                 raise SystemExit("Printune: the cooling cone is too tall for this printer: use a lower cool_time")
+        self.br = None
+        if "bridge" not in s.skip:
+            self.br = self._bridge_test(opt)
         self.objs = []
         self.t_print = int(round(s.t_nozzle))
         self.t_first = int(round(s.t_first))
+
+    def _bridge_test(self, opt):
+        s, o = self.s, self.s.opt
+        spans = opt("bridge_spans", parse_range)
+        fans = opt("bridge_fans", parse_range) if str(o["bridge_fans"]).strip() else []
+        flows = opt("bridge_flows", parse_range)
+        try:
+            base = float(o["bridge_base"])
+        except ValueError:
+            raise SystemExit("Printune: can't read bridge_base=%s" % o["bridge_base"])
+        base = int(round(base if base >= 0 else s.fan_max))
+        if (any(v < 5 for v in spans) or any(f < 0 or f > 100 for f in fans + [base])
+                or any(f <= 0 or f > 2 for f in flows)):
+            raise SystemExit("Printune: bridge_spans are 5 mm or more, bridge_fans 0-100 %, bridge_flows 0-2")
+        # spans that don't fit the bed: the longest go
+        W = s.bed[2] - s.bed[0]
+        room = W - 2 * min(s.margin, max(5.0, 0.05 * min(W, s.bed[3] - s.bed[1]))) - 12.0
+        spans = sorted(spans)
+        while len(spans) > 1 and BridgeTest.strip_length(spans) > room:
+            dropped = spans.pop()
+            self.warn.append("bridge test: no room for the %s mm span on this bed" % fmt_val(dropped, 1))
+        if BridgeTest.strip_length(spans) > room:
+            raise SystemExit("Printune: the bridge test does not fit on this bed: use shorter bridge_spans")
+        # speeds: never above what the printer and the filament's flow limit allow
+        cap = min(s.vmax, s.mvs / bridge_flow(s, max(flows + [s.br_flow]))[0])
+        if str(o["bridge_speeds"]).strip():
+            speeds = opt("bridge_speeds", parse_range)
+        else:
+            speeds = sorted({max(5, int(5 * round(s.v_bridge * f / 5.0))) for f in BR_SPEED_F})
+        if any(v <= 0 for v in speeds):
+            raise SystemExit("Printune: bridge_speeds must be above 0")
+        if speeds[-1] > cap + 1e-6:
+            speeds = [v for v in speeds if v < cap - 1e-6] + [math.floor(cap)]
+            self.warn.append("bridge test: speeds capped at %d mm/s (max_velocity or the max volumetric speed)"
+                             % math.floor(cap))
+        speeds = sorted(set(speeds))
+        # the pillars' minimum layer time: as the cooling blocks'
+        ft = FILAMENTS.get(s.ftype)
+        dflt = ft["cool"] if ft else (COOL_HIGH if s.fan_max >= 50 else COOL_LOW)
+        try:
+            pad = float(o["cool_pad"]) or dflt[2]
+        except ValueError:
+            raise SystemExit("Printune: can't read cool_pad")
+        return BridgeTest(s, spans, [int(round(f)) for f in fans], speeds, flows, base, min(s.v_bridge, cap), pad)
 
     def n_layers(self):
         mh = self.wr.max_h
@@ -1642,19 +1828,22 @@ class Session:
                 labs = [fmt_val(d * 100, 1) for d in self.em_fine]
                 self.em_f = self._place_em(labs, "EM_F", "em_fine", (col_l, by1 - m - hf / 2))
 
-        # retraction towers, cooling blocks and cone, and the max flow tower (printed last). The
-        # tower is placed first, so the others fit around it; if that puts anything printed before
-        # it on a later plate, everything goes in print order instead (a plate printed earlier
-        # must not hold the tower). _fits keeps the gantry off the tower either way.
+        # retraction towers, cooling blocks and cone, bridge strips, and the max flow tower (printed
+        # last). The tower is placed first, so the others fit around it; if that puts anything
+        # printed before it on a later plate, everything goes in print order instead (a plate
+        # printed earlier must not hold the tower). _fits keeps the gantry off the tower either way.
         saved = [list(p) for p in self.plates]
         self._place_mvs(X, Y)
         self._place_towers(Y)
         self._place_cool(X, Y)
-        before = self.towers + self.cool_objs + ([self.cone_obj] if self.cone_obj else [])
+        self._place_bridge(X, Y)
+        before = (self.towers + self.cool_objs + ([self.cone_obj] if self.cone_obj else [])
+                  + [o for m in BR_MODES for o in self.br_objs[m]])
         if self.mvs_obj and before and max(o.plate for o in before) > self.mvs_obj.plate:
             self.plates = saved
             self._place_towers(Y)
             self._place_cool(X, Y)
+            self._place_bridge(X, Y)
             self._place_mvs(X, Y)
 
         # extra patches: printed right after the first round, so they only need to stay
@@ -1786,6 +1975,37 @@ class Session:
         if not got:
             raise SystemExit("Printune: the cooling cone does not fit on this bed")
         self.cone_obj = got[0]
+
+    def _place_bridge(self, X, Y):
+        """Each pass is a block of strips, one per value, front to back, labelled on the left."""
+        self.br_objs = {m: [] for m in BR_MODES}
+        b = self.br
+        if not b:
+            return
+        # front, back, then between them: three blocks a toolhead radius apart fit on a 300 mm bed
+        pref = {"fan": 0.15, "speed": 0.85, "flow": 0.5}
+        for mode in BR_MODES:
+            labels = b.labels(mode)
+            got = self._place([(lambda cx, cy, labels=labels, mode=mode: self._br_block(cx, cy, labels, mode),
+                                (X(0.3), Y(pref[mode])))])
+            if not got:
+                raise SystemExit("Printune: the bridge test does not fit on this bed: use fewer values or "
+                                 "shorter bridge_spans")
+            self.br_objs[mode] = got
+
+    def _br_block(self, cx, cy, labels, mode):
+        b = self.br
+        tw = max(label_size(l)[0] for l in labels)
+        tot_x = tw + 1.0 + b.length
+        tot_y = b.depth(len(labels))
+        x0, y0 = cx - tot_x / 2, cy - tot_y / 2
+        # strip 1 is at the front, with the prime line in front of it
+        ob = Obj("BR_%s" % mode.upper(), (x0 - 1, y0 - 6.0, x0 + tot_x + 1, y0 + tot_y + 1), b.height, "br_" + mode)
+        ob.px = x0 + tw + 1.0
+        ob.strips = [y0 + i * (BR_D + BR_GAP) for i in range(len(labels))]
+        ob.labels = labels
+        ob.labs = [(x0 + tw - label_size(l)[0], y + (BR_D - label_size(l)[1]) / 2) for l, y in zip(labels, ob.strips)]
+        return [ob]
 
     def _place(self, builds, new_plate=True):
         """builds: [(build(cx, cy) -> objs, preferred (cx, cy))], tried in order. Place on the
@@ -2079,6 +2299,33 @@ class Session:
             if nxt:
                 self._cp(wr, self._cool_cp() + " NEXT=%s" % ",".join(nxt))
 
+        # ---- bridges: fan, then speed, then flow ----
+        if self.br_objs["flow"]:
+            b, bo = self.br, self.br_objs
+            g("; ----- BRIDGES: three passes (fan, speed, flow), each keeps the picks before it -----")
+            g("M117 %s bridges" % T["bridge"])
+            # the picks so far go into the preset now, so a cancel during the test keeps them
+            g("_PRINTUNE_SAVEPOINT")
+            names = lambda ms: [o.name for m in ms for o in bo[m]]
+            # the fan pass's fans: from the fan picked in the cooling test, else from b.base
+            g("_PRINTUNE_BRIDGE_FANS OBJ=%s N=%d BASE=%d%s" % (bo["fan"][0].name, b.n_fans, b.base,
+                                                              (" FANS=" + ",".join(map(str, b.fans))) if b.fans else ""))
+            for k, mode in enumerate(BR_MODES):
+                # a plate pause can skip the rest of the bridge test
+                self._plate(wr, bo[mode], skip=names(BR_MODES[k:]), what="bridge")
+                self._bridge_pass(wr, bo[mode][0], mode)
+                if mode == "fan":
+                    self._cp(wr, "_PRINTUNE_CP STEP=bridge_fan OBJ=%s SPANS=%s" % (
+                        bo["fan"][0].name, ",".join(fmt_val(v, 1) for v in b.spans)))
+                    g("_PRINTUNE_SAVEPOINT")
+                elif mode == "speed":
+                    self._cp(wr, "_PRINTUNE_CP STEP=bridge_speed OBJ=%s SPEEDS=%s" % (
+                        bo["speed"][0].name, ",".join(fmt_val(v, 1) for v in b.speeds)))
+                    g("_PRINTUNE_SAVEPOINT")
+            nxt = self._next_names("bridge")
+            if nxt:
+                self._cp(wr, self._bridge_cp() + " NEXT=%s" % ",".join(nxt))
+
         # ---- max volumetric flow ----
         if self.mvs_obj:
             g("; ----- MAX VOLUMETRIC FLOW tower -----")
@@ -2098,6 +2345,8 @@ class Session:
         last = self.steps[-1] if self.steps else ""
         if last == "cool":
             g(self._cool_cp())
+        elif last == "bridge":
+            g(self._bridge_cp())
         elif last == "mvs":
             g(self._mvs_cp())
         elif last == "ret":
@@ -2111,7 +2360,8 @@ class Session:
         """The tests this session prints, in order, and each one's prompt title prefix:
         'Printune 2/4' in the wizard, 'Advanced 1/2' in advanced tuning, 'Printune' alone."""
         have = {"squish": bool(self.patches), "pa": bool(self.pa_objs), "em": bool(self.em_c),
-                "ret": bool(self.towers), "mvs": bool(self.mvs_obj), "cool": bool(self.cone_obj)}
+                "ret": bool(self.towers), "mvs": bool(self.mvs_obj), "cool": bool(self.cone_obj),
+                "bridge": bool(self.br_objs["flow"])}
         self.steps = [t for t in ORDER if have[t]]
         adv = self.steps and all(t in PROCS["advanced"] for t in self.steps)
         self.proc_word = TITLE_WORD["advanced" if adv else "wizard"]
@@ -2131,7 +2381,13 @@ class Session:
             return [self.mvs_obj.name]
         if nxt == "cool":
             return [o.name for o in self.cool_objs] + [self.cone_obj.name]
+        if nxt == "bridge":
+            return [o.name for m in BR_MODES for o in self.br_objs[m]]
         return []
+
+    def _bridge_cp(self):
+        return "_PRINTUNE_CP STEP=bridge_flow OBJ=%s FLOWS=%s" % (
+            self.br_objs["flow"][0].name, ",".join(fmt_val(f, 3) for f in self.br.flows))
 
     def _mvs_cp(self):
         m = self.mvs
@@ -2159,7 +2415,8 @@ class Session:
         st, i0, _ = snap
         mv, _ = gcode_moves(wr.out[i0:], (st["x"] or 0.0, st["y"] or 0.0, st["z"]), st["accel"] or 3000.0,
                             fw=(self.s.ret_len, self.s.ret_speed))
-        return sum(kalico_plan(mv, **self.cool.plan_args()))
+        s = self.s
+        return sum(kalico_plan(mv, scv=s.scv, mcr=s.mcr, vmax=s.vmax, zv=s.zv, za=s.za))
 
     def _cool_block(self, wr, o):
         """One overhang block, alone, with its own fan; block layers stretched to cool.pad seconds."""
@@ -2288,6 +2545,82 @@ class Session:
             self.warn.append("cooling cone: a marker is %.1f s off its layer time" % max(off))
         wr.retract()
         obj_end(wr, o)
+
+    def _bridge_pass(self, wr, o, mode):
+        """One pass: the pillar walls layer by layer, then the bridge layer strip by strip (fan pass:
+        each strip's own fan; speed pass: its own speed; flow pass: its own flow), then a solid
+        layer on each strip. The pillars and the top layer print at the filament's fan."""
+        s, b = self.s, self.br
+        self._park(wr)
+        wr.g("_PRINTUNE_BRIDGE_TEMP OBJ=%s S=%d" % (o.name, self.t_print))
+        wr.safe_travel(o.px, o.strips[0] - 4.0)
+        obj_start(wr, o)
+        wr.fan(0)
+        prime_line(wr, s, o.px, o.strips[0] - 4.0, min(40.0, b.length))
+        base_fan = "_PRINTUNE_COOL_FAN D=%d" % b.base      # the picked cooling fan, else the base
+        wr.g("; bridge test, %s pass: spans %s mm, %d pillar layers (at least %g s each), bridge layer at Z %.3f" % (
+            mode, ",".join(fmt_val(v, 1) for v in b.spans), len(b.zs), b.pad, b.zb))
+        pil = b.pillars(o)
+        for li, z in enumerate(b.zs):
+            if li == s.fan_off_layers:
+                wr.g(base_fan)
+            h = s.h1 if li == 0 else s.h
+            snap = wr.snapshot()
+            wr.vscale, wr.vmin = 1.0, s.v_slow_min
+            for _ in range(12):
+                wr.z_to(z)
+                for (x0, y0, x1, y1) in (pil if li % 2 == 0 else pil[::-1]):
+                    loops, edge = walls_rect(s, x0, y0, x1, y1, s.wall_loops, h, li == 0)
+                    print_walls(wr, s, loops, h)
+                    w = s.w_first if li == 0 else s.w_solid
+                    v = s.v_first_infill if li == 0 else s.v_solid
+                    a = s.a_first if li == 0 else s.a_solid
+                    print_fill(wr, s, x0, y0, x1, y1, edge, w, h, v, a, spacing(w, h),
+                               45 if li % 2 == 0 else -45, s.ov_solid, "solid")
+                if li <= 1:
+                    for lab, xy in zip(o.labels, o.labs):
+                        label_tab(wr, s, xy[0], xy[1], lab, li)
+                if li == 0:
+                    break
+                # thin walls: slow down to the filament's minimum layer time, as Orca would
+                t = self._layer_time(wr, snap)
+                if t >= b.pad - 0.1 or wr.vscale * max(s.v_inner, s.v_solid, s.v_outer) <= wr.vmin:
+                    break
+                vs = wr.vscale * t / b.pad
+                wr.restore(snap)
+                wr.vscale = vs
+            wr.vscale = 1.0
+        if s.fan_off_layers >= len(b.zs):
+            wr.g(base_fan)
+        wr.g("; bridge layer")
+        for i in range(len(o.strips)):
+            if mode == "fan":
+                wr.g("_PRINTUNE_BRIDGE_FAN I=%d" % (i + 1))
+            else:
+                wr.g("_PRINTUNE_BRIDGE_FAN")                  # the picked bridge fan
+            ratio = b.flows[i] if mode == "flow" else s.br_flow
+            if mode == "speed":
+                b.draw_bridges(wr, o, i, ratio, b.speeds[i])
+            else:
+                if mode == "flow":
+                    # the picked speed: M220 scales the speed the lines are written at
+                    wr.g("_PRINTUNE_BRIDGE_SPEED REF=%s" % fmt_val(b.v_ref, 2))
+                b.draw_bridges(wr, o, i, ratio, b.v_ref)
+                if mode == "flow":
+                    wr.g("M220 S100")
+        wr.g(base_fan)
+        for k, z in enumerate(b.zc):
+            for i in (range(len(o.strips)) if k % 2 else range(len(o.strips) - 1, -1, -1)):
+                x0, y0, x1, y1 = pil[0][0], o.strips[i], pil[-1][2], o.strips[i] + BR_D
+                wr.travel(x0, y1)
+                wr.z_to(z)
+                loops, edge = walls_rect(s, x0, y0, x1, y1, s.wall_loops, s.h, False)
+                print_walls(wr, s, loops, s.h)
+                print_fill(wr, s, x0, y0, x1, y1, edge, s.w_solid, s.h, s.v_solid, s.a_solid,
+                           spacing(s.w_solid, s.h), 0, s.ov_solid, "solid")
+        wr.retract()
+        obj_end(wr, o)
+        wr.max_h = max(wr.max_h, b.height)
 
     def _mvs(self, wr, o):
         s, m = self.s, self.mvs
@@ -2473,7 +2806,7 @@ class Session:
              "; DISCLAIMER: generated G-code, provided as is without any warranty. Use it at your own",
              "; risk; the authors take no responsibility for any damage. Watch the print.",
              "; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.",
-             "; Order: squish -> PA -> EM -> retraction -> cooling -> max flow. Picks are applied to every later test.",
+             "; Order: squish -> PA -> EM -> retraction -> cooling -> bridges -> max flow. Picks are applied to every later test.",
              "; PA values: %s" % ", ".join(fmt_val(v) for v in self.pa_vals),
              "; PA fine offsets: %s" % ", ".join(fmt_val(v, 5) for v in self.pa_fine),
              "; EM values: %s" % ", ".join("%.3f" % v for v in self.em_vals),
@@ -2485,6 +2818,13 @@ class Session:
                  "%g mm/s, %g s at the bottom, markers %s s" % (
                      self.cool.v, self.cool.t0, ",".join(str(self.cool.marks[k]) for k in sorted(self.cool.marks))))
              if self.cool else "; Cooling: -",
+             "; Bridges: spans %s mm, fans %s, speeds %s mm/s, flows %s; Orca %s bridges, width %.2f, density %g %%" % (
+                 ",".join(fmt_val(v, 1) for v in self.br.spans),
+                 (",".join(map(str, self.br.fans)) + " %") if self.br.fans else
+                 "%d steps from the picked fan (else %d %%) to 100 %%" % (self.br.n_fans, self.br.base),
+                 ",".join(fmt_val(v, 1) for v in self.br.speeds), ",".join(fmt_val(f, 3) for f in self.br.flows),
+                 "thick" if s.thick_bridges else "normal", bridge_flow(s, 1.0)[1], s.br_density * 100)
+             if self.br else "; Bridges: -",
              "; Max flow bands: %s" % (", ".join(fmt_val(f, 2) for f in self.mvs.flows) if self.mvs else "-"),
              "; Firmware retraction: %s, z-hop %.2f, toolhead clearance radius %.0f mm" % (
                  s.fw_retract, s.z_hop, s.clearance)]

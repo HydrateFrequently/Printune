@@ -7,7 +7,7 @@ Simulates the moves (G90 XY/Z, M83 E) and reports:
   * extrusions laid onto another object (an uncleared plate)
   * gantry: the X gantry spans the bed at the nozzle's Y; a move whose Y band (+-margin) holds
     printed material more than the rod height above the nozzle tip runs the gantry into it
-  --skip=cool,cone,mvs simulates pressing "Skip" at those plate pauses
+  --skip=cool,cone,bridge,mvs simulates pressing "Skip" at those plate pauses
   --rod=36 (Orca's extruder_clearance_height_to_rod), --margin=10 (mm either side of the nozzle's Y)
   * toolhead clearance: the tallest printed thing (above the nozzle tip) within
     radius r of the nozzle, for every move, binned by r
@@ -25,7 +25,7 @@ RES = 0.25  # heightmap resolution, mm
 
 
 def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388), skip=()):
-    """skip: WHAT labels (cool, cone, mvs) whose "Skip" button is pressed at the plate pause,
+    """skip: WHAT labels (cool, cone, bridge, mvs) whose "Skip" button is pressed at the plate pause,
     simulating the macros: those objects are excluded and the plate stays uncleared."""
     fa = math.pi * (fil_d / 2) ** 2
     x = y = z = 0.0
@@ -210,7 +210,7 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), rod=36.0, 
 
 
 if __name__ == "__main__":
-    # check_gcode.py FILE [R] [W,D] [--skip=cool,cone,mvs] [--rod=36] [--margin=10]
+    # check_gcode.py FILE [R] [W,D] [--skip=cool,cone,bridge,mvs] [--rod=36] [--margin=10]
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     kw = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
     skip = tuple(kw["skip"].split(",")) if kw.get("skip") else ()
