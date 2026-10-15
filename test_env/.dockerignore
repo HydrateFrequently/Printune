@@ -1,0 +1,4 @@
+netfix/*
+!netfix/.keep
+gcodes/
+logs/

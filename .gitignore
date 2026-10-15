@@ -1,0 +1,8 @@
+test_env/gcodes/
+test_env/logs/
+__pycache__/
+*.run.jsonl
+*.height.npy
+*.paths.npz
+__pycache__/
+test_env/fleet/
