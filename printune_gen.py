@@ -33,11 +33,14 @@ Usage
       --toolhead-box=-X,+X,-Y,+Y   mm from the nozzle to the toolhead's edges (fans, ducts, probe)
       --gantry-height=MM           bed to the underside of the X gantry, nozzle at Z=0
       --bed-area=X0,Y0,X1,Y1       where the nozzle may print
-      --accept-risk                you measured them; no warranty, no responsibility for damage
-  (or the same as options: toolhead_box=... gantry_height=... bed_area=... accept_risk=1)
+      --nozzle-protrusion=MM       nozzle tip to the lowest other part of the toolhead (duct, probe, sock)
+      --accept-risk                you measured them; no warranty, zero responsibility for damage
+  (or the same as options: toolhead_box=... gantry_height=... bed_area=... nozzle_protrusion=...
+  accept_risk=1)
 
   OrcaSlicer post-processing script (Process > Others > Post-processing scripts):
-      /usr/bin/python3 /path/to/printune_gen.py --toolhead-box=... --gantry-height=... --bed-area=... --accept-risk;
+      /usr/bin/python3 /path/to/printune_gen.py --toolhead-box=... --gantry-height=... --bed-area=...
+          --nozzle-protrusion=... --accept-risk;
       "C:\Path\To\python.exe" "C:\path\to\printune_gen.py" --toolhead-box=... (same options);   (Windows)
   then add Printune.stl to an empty plate and slice. Every setting (speeds, accels,
   widths, temps, retraction, PA, flow ratio, bed size, start/end G-code) is
@@ -55,13 +58,14 @@ Options can also be written into the Printune object's name in Orca, e.g.
 """
 
 import argparse
+import hashlib
 import math
 import os
 import re
 import shlex
 import sys
 
-VERSION = 8            # must match variable_version in printune.cfg
+VERSION = 9            # must match variable_version in printune.cfg
 
 # Every test in print order, and the procedures. A test moves between the Tuning Wizard and
 # Advanced tuning by moving its key between the two lists (the plugin, the menu and the page
@@ -223,12 +227,12 @@ OPTIONS = {
     "zv": 0,                    # max_z_velocity, 0 = max_velocity (the plugin sets it)
     "za": 0,                    # max_z_accel, 0 = max_accel (the plugin sets it)
     "scv": 5.0,                 # the printer's square_corner_velocity (the plugin sets it)
-    # Machine geometry: REQUIRED, never assumed. The session refuses to build without all four.
+    # Machine geometry: REQUIRED, never assumed. The session refuses to build without all five.
     "toolhead_box": "",         # mm from the nozzle to the toolhead's edges: -X,+X,-Y,+Y (fans, ducts, probe included)
     "gantry_height": "",        # mm from the bed to the underside of the X gantry, nozzle at Z=0
     "bed_area": "",             # x0,y0,x1,y1: where the nozzle may print (e.g. the bed mesh area)
+    "nozzle_protrusion": "",    # mm from the nozzle tip up to the lowest other part of the toolhead
     "accept_risk": 0,           # 1 = you measured these yourself and accept the risk (no warranty)
-    "low_ok": 1.2,              # objects lower than this may sit under the toolhead
     "margin": 12.0,             # keep-out from the printable-area edge
 }
 
@@ -236,18 +240,26 @@ OPTIONS = {
 # --------------------------------------------------------------------------
 # Machine geometry (the user's measurements; Printune assumes none of it)
 # --------------------------------------------------------------------------
-GEOMETRY_KEYS = ("toolhead_box", "gantry_height", "bed_area", "accept_risk")
+GEOMETRY_KEYS = ("toolhead_box", "gantry_height", "bed_area", "nozzle_protrusion", "accept_risk")
+# A finished print may sit under the toolhead when it is at least this much lower than the nozzle
+# protrusion. The nozzle never goes below the first layer height, so the real gap is this margin
+# plus the first layer (>= 0.4 mm); the margin covers a measurement off by a little and blobs or
+# ridges on a print's top.
+LOW_MARGIN = 0.2
 GEOMETRY_HELP = (
     "Printune makes no assumptions about your printer's geometry: measure it yourself and pass "
     "toolhead_box=-X,+X,-Y,+Y (mm from the nozzle to the furthest point of the toolhead on each side: "
     "fans, ducts, probe and carriage included, and the X beam if it reaches further in Y), "
     "gantry_height=MM (from the bed to the underside of the X gantry with the nozzle at Z=0), "
-    "bed_area=X0,Y0,X1,Y1 (where the nozzle may print, e.g. your bed mesh area) and accept_risk=1 "
-    "(you measured these yourself; Printune and its authors take no responsibility for the generated "
+    "bed_area=X0,Y0,X1,Y1 (where the nozzle may print, e.g. your bed mesh area), "
+    "nozzle_protrusion=MM (from the nozzle tip up to the lowest other part of the toolhead: duct, probe, "
+    "silicone sock) and accept_risk=1 "
+    "(you measured these yourself; Printune and its authors take zero responsibility for the generated "
     "G-code, collisions or any damage, see the GPL-3.0 sections 15 and 16). "
-    "Command line: --toolhead-box=-X,+X,-Y,+Y --gantry-height=MM --bed-area=X0,Y0,X1,Y1 --accept-risk. "
+    "Command line: --toolhead-box=-X,+X,-Y,+Y --gantry-height=MM --bed-area=X0,Y0,X1,Y1 "
+    "--nozzle-protrusion=MM --accept-risk. "
     "Orca post-processing: put the same options on the script line before the ';', or in the Printune "
-    "object's name (toolhead_box=... gantry_height=... bed_area=... accept_risk=1).")
+    "object's name (toolhead_box=... gantry_height=... bed_area=... nozzle_protrusion=... accept_risk=1).")
 
 
 def _nums(text, n, key):
@@ -264,14 +276,14 @@ def parse_toolhead_box(text):
     """'-30,30,-40,25' -> (-30, 30, -40, 25). The order is -X, +X, -Y, +Y; signs are optional
     (each number is the distance from the nozzle to that side)."""
     v = _nums(text, 4, "toolhead_box")
-    xn, xp, yn, yp = (abs(x) for x in v)
+    xn, xp, yn, yp = (round(abs(x), 2) for x in v)
     if min(xn, xp, yn, yp) <= 0 or max(xn, xp, yn, yp) > 300:
         raise ValueError("toolhead_box: each side must be more than 0 and at most 300 mm (got '%s')" % text)
     return (-xn, xp, -yn, yp)
 
 
 def parse_bed_area(text):
-    x0, y0, x1, y1 = _nums(text, 4, "bed_area")
+    x0, y0, x1, y1 = (round(x, 2) + 0.0 for x in _nums(text, 4, "bed_area"))
     if x1 - x0 < 50 or y1 - y0 < 50:
         raise ValueError("bed_area is x0,y0,x1,y1 with x1 > x0 and y1 > y0, at least 50 mm each way "
                          "(got '%s')" % text)
@@ -279,15 +291,32 @@ def parse_bed_area(text):
 
 
 def parse_gantry_height(text):
-    v = _nums(text, 1, "gantry_height")[0]
+    v = round(_nums(text, 1, "gantry_height")[0], 2)
     if not 1 <= v <= 1000:
         raise ValueError("gantry_height must be 1 to 1000 mm (got '%s')" % text)
     return v
 
 
+def parse_nozzle_protrusion(text):
+    v = round(_nums(text, 1, "nozzle_protrusion")[0], 2) + 0.0
+    if not 0 <= v <= 50:
+        raise ValueError("nozzle_protrusion must be 0 to 50 mm (got '%s')" % text)
+    return v
+
+
+def geometry_hash(bed, box, gantry, protrusion):
+    """A short fingerprint of the measured geometry: the acceptance and every session carry it, so
+    a changed value (a hand edit of printer.cfg too) shows."""
+    f = lambda v: "%.2f" % (round(float(v), 2) + 0.0)
+    text = "bed=%s;box=%s;gantry=%s;protrusion=%s" % (
+        ",".join(f(v) for v in bed), ",".join(f(v) for v in box), f(gantry), f(protrusion))
+    return hashlib.sha1(text.encode("ascii")).hexdigest()[:10]
+
+
 def parse_geometry(opt):
-    """(bed_area, toolhead_box, gantry_height) from the options, or SystemExit saying what is missing."""
-    missing = [k for k in GEOMETRY_KEYS[:3] if not str(opt.get(k, "")).strip()]
+    """(bed_area, toolhead_box, gantry_height, nozzle_protrusion) from the options, or SystemExit
+    saying what is missing."""
+    missing = [k for k in GEOMETRY_KEYS[:4] if not str(opt.get(k, "")).strip()]
     accepted = str(opt.get("accept_risk", "0")).strip().lower() in ("1", "true", "yes")
     if not accepted:
         missing.append("accept_risk")
@@ -296,7 +325,7 @@ def parse_geometry(opt):
                          % (", ".join(missing), GEOMETRY_HELP))
     try:
         return (parse_bed_area(opt["bed_area"]), parse_toolhead_box(opt["toolhead_box"]),
-                parse_gantry_height(opt["gantry_height"]))
+                parse_gantry_height(opt["gantry_height"]), parse_nozzle_protrusion(opt["nozzle_protrusion"]))
     except ValueError as e:
         raise SystemExit("Printune: %s.\n%s" % (e, GEOMETRY_HELP))
 
@@ -330,8 +359,15 @@ class Settings:
         if "clearance" in cfg or "clearance" in opts:
             raise SystemExit("Printune: the clearance option is gone: give the toolhead's size as "
                              "toolhead_box=-X,+X,-Y,+Y instead.\n" + GEOMETRY_HELP)
+        if "low_ok" in cfg or "low_ok" in opts:
+            raise SystemExit("Printune: the low_ok option is gone: give the nozzle protrusion as "
+                             "nozzle_protrusion=MM instead.\n" + GEOMETRY_HELP)
         # the user's measured geometry; nothing is assumed
-        area, self.box, self.gantry = parse_geometry(self.opt)
+        area, self.box, self.gantry, self.protrusion = parse_geometry(self.opt)
+        self.area = tuple(area)
+        self.geom_hash = geometry_hash(area, self.box, self.gantry, self.protrusion)
+        # finished prints at most this tall may sit under the toolhead (see LOW_MARGIN)
+        self.low_ok = self.protrusion - LOW_MARGIN
         self.notes = []
         if "printable_area" in cfg and str(cfg["printable_area"]).strip():
             # the slicer's (or orca_settings') printable area: the session stays inside both
@@ -430,7 +466,6 @@ class Settings:
         self.ov_sparse = _num(c["infill_wall_overlap"]) / 100.0
         self.ov_solid = _num(c["top_bottom_infill_wall_overlap"]) / 100.0
         o = self.opt
-        self.low_ok = float(o["low_ok"])
         self.margin = float(o["margin"])
         self.proc = str(o["proc"]).strip().lower()
         if self.proc not in PROCS:
@@ -1826,9 +1861,16 @@ class Session:
         except ValueError:
             raise SystemExit("Printune: can't read bridge_base=%s" % o["bridge_base"])
         base = int(round(base if base >= 0 else s.fan_max))
+        if any(f < 0.5 for f in flows):
+            # below about 0.42 (normal bridges) Orca's narrowed line gets no wider than it is high
+            # and collapses to a round thread with a quarter of the material asked for (see
+            # bridge_flow): such a strip does not show what that flow would print
+            raise SystemExit("Printune: bridge_flows below 0.5 are not a meaningful test: below about "
+                             "0.42 Orca collapses the bridge line to a thin round thread with a quarter "
+                             "of the asked-for material. Use values from 0.5 to 2")
         if (any(v < 5 for v in spans) or any(f < 0 or f > 100 for f in fans + [base])
-                or any(f <= 0 or f > 2 for f in flows)):
-            raise SystemExit("Printune: bridge_spans are 5 mm or more, bridge_fans 0-100 %, bridge_flows 0-2")
+                or any(f > 2 for f in flows)):
+            raise SystemExit("Printune: bridge_spans are 5 mm or more, bridge_fans 0-100 %, bridge_flows 0.5-2")
         # spans that don't fit the bed: the longest go
         W = s.bed[2] - s.bed[0]
         room = W - 2 * min(s.margin, max(5.0, 0.05 * min(W, s.bed[3] - s.bed[1]))) - 12.0
@@ -1951,8 +1993,10 @@ class Session:
         self._place_mvs(X, Y)
 
         # extra patches: printed right after the first round, so they only need to stay
-        # off the other objects of plate 1 (they are low, the clearance rule doesn't apply)
+        # off the other objects of plate 1 when they are low (one layer under the nozzle
+        # protrusion); otherwise they get a plate of their own
         nb = int(s.opt["patches_extra"]) if self.patches else 0
+        patches_low = s.h1 <= s.low_ok
         rank = {"patches": 0, "patches_b": 1}
         for i in range(nb):
             dx = (-1 if i % 2 == 0 else 1) * 16.0
@@ -1961,7 +2005,7 @@ class Session:
             build = lambda cx, cy, name=name: [Obj(name, (cx - PATCH / 2, cy - PATCH / 2, cx + PATCH / 2,
                                                           cy + PATCH / 2), s.h1, "patches_b")]
             got = None
-            for cx, cy in self._candidates(build, (col_l + dx, ccy + dy)):
+            for cx, cy in (self._candidates(build, (col_l + dx, ccy + dy)) if patches_low else ()):
                 objs = build(cx, cy)
                 if all(self._on_bed(o) and not any(overlap(o.box, p.box, 0.5) for p in self.plates[0])
                        for o in objs):
@@ -1990,7 +2034,7 @@ class Session:
                 # they fit beside it (the patches are low), else onto a plate of their own
                 rest = [o for o in self.plates[0] if o.section != "patches"]
                 self.plates[0] = [o for o in self.plates[0] if o.section == "patches"]
-                if any(overlap(o.box, p.box, 0.5) for o in rest for p in out):
+                if not patches_low or any(overlap(o.box, p.box, 0.5) for o in rest for p in out):
                     self.plates[1:1] = [out, rest]
                 else:
                     self.plates.insert(1, out + rest)
@@ -2179,7 +2223,7 @@ class Session:
                 lb = later.box
                 # while the later object prints, the toolhead box around the nozzle sweeps its box
                 # grown by the box's sides: it must not reach a finished object that is taller than
-                # low_ok. Objects of one section print layer by layer together, except the
+                # low_ok (the nozzle protrusion less LOW_MARGIN). Objects of one section print layer by layer together, except the
                 # retraction towers and cooling blocks, which print one at a time.
                 if (first.height > s.low_ok and (p.section != o.section or o.section in ("ret", "cool"))
                         and overlap((lb[0] + xn, lb[1] + yn, lb[2] + xp, lb[3] + yp), first.box)):
@@ -2295,8 +2339,10 @@ class Session:
         # PA=-1: Orca does not set PA, so keep whatever the printer has now
         T = self.titles()
         set_ret = int(float(s.opt["set_ret"])) and s.fw_retract
-        g("_PRINTUNE_BEGIN VERSION=%d PA=%s EM=%.4f FW=%d PFR=%.4f STEPS=%s PROC=%s" % (
-            VERSION, fmt_val(s.pa_profile, 4) if s.pa_enabled else "-1", s.em_profile,
+        # GEOM: the fingerprint of the geometry this session was laid out for; with the plugin
+        # loaded, _PRINTUNE_BEGIN refuses it unless it matches the saved, accepted machine setup
+        g("_PRINTUNE_BEGIN VERSION=%d GEOM=%s PA=%s EM=%.4f FW=%d PFR=%.4f STEPS=%s PROC=%s" % (
+            VERSION, s.geom_hash, fmt_val(s.pa_profile, 4) if s.pa_enabled else "-1", s.em_profile,
             1 if s.fw_retract else 0, _num(s.cfg.get("print_flow_ratio", "1")) or 1.0,
             ",".join(self.steps), self.proc_word))
         if set_ret:
@@ -2920,7 +2966,7 @@ class Session:
         s = self.s
         h = ["; Printune tuning session (printune_gen.py v%d)" % VERSION,
              "; DISCLAIMER: generated G-code, provided as is without any warranty. Use it at your own",
-             "; risk; the authors take no responsibility for any damage. Watch the print.",
+             "; risk; the authors take zero responsibility for any damage. Watch the print.",
              "; Needs printune.cfg (Klipper/Kalico) included in printer.cfg.",
              "; Order: squish -> PA -> EM -> retraction -> cooling -> bridges -> max flow. Picks are applied to every later test.",
              "; PA values: %s" % ", ".join(fmt_val(v) for v in self.pa_vals),
@@ -2944,7 +2990,11 @@ class Session:
              "; Max flow bands: %s" % (", ".join(fmt_val(f, 2) for f in self.mvs.flows) if self.mvs else "-"),
              "; Firmware retraction: %s, z-hop %.2f" % (s.fw_retract, s.z_hop),
              "; Machine geometry (the user's own measurements, risk accepted): bed area %s, "
-             "toolhead box %s (-X,+X,-Y,+Y), gantry height %g mm" % (fmt_box(s.bed), fmt_box(s.box), s.gantry)]
+             "toolhead box %s (-X,+X,-Y,+Y), gantry height %g mm, nozzle protrusion %g mm"
+             % (fmt_box(s.area), fmt_box(s.box), s.gantry, s.protrusion),
+             "; printune_geometry: bed_area=%s toolhead_box=%s gantry_height=%g nozzle_protrusion=%g "
+             "print_area=%s geom=%s" % (fmt_box(s.area), fmt_box(s.box), s.gantry, s.protrusion,
+                                        fmt_box(s.bed), s.geom_hash)]
         if s.h1 < 0.25 or s.w_first < 1.2 * s.nozzle:
             h.append("; NOTE: use a first layer >= 0.25 mm and first-layer width >= 120 %% "
                      "(profile: %.2f mm, %.2f mm)" % (s.h1, s.w_first))
@@ -3129,15 +3179,17 @@ def main(argv=None):
                    help="mm from the nozzle to the toolhead's edges; write it with '=' (--toolhead-box=-30,30,-40,25)")
     g.add_argument("--gantry-height", metavar="MM", help="bed to the underside of the X gantry, nozzle at Z=0")
     g.add_argument("--bed-area", metavar="X0,Y0,X1,Y1", help="where the nozzle may print")
+    g.add_argument("--nozzle-protrusion", metavar="MM",
+                   help="nozzle tip up to the lowest other part of the toolhead (duct, probe, sock)")
     g.add_argument("--accept-risk", action="store_true",
-                   help="you measured these yourself; no warranty, no responsibility for collisions or damage")
+                   help="you measured these yourself; no warranty, zero responsibility for collisions or damage")
     a = ap.parse_args(argv)
 
     cfg, opts = {}, {}
     for kv in a.set:
         k, v = kv.split("=", 1)
         (opts if k in OPTIONS else cfg)[k] = v
-    for k in ("toolhead_box", "gantry_height", "bed_area"):
+    for k in ("toolhead_box", "gantry_height", "bed_area", "nozzle_protrusion"):
         if getattr(a, k) is not None:
             opts[k] = getattr(a, k)
     if a.accept_risk:

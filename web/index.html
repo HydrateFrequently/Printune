@@ -251,7 +251,7 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
       <h2 class="section">1. The printer (pre-flight)</h2>
       <div class="grid2">
         <button type="button" class="test-card" id="setupBtn"><b>Machine setup</b>
-          <span id="setupSub">Your bed area, toolhead size and gantry height. Needed before any test print.</span></button>
+          <span id="setupSub">Your bed area, toolhead size, gantry height and nozzle protrusion. Needed before any test print.</span></button>
         <button type="button" class="test-card" id="beltBtn"><b>Belt tension</b>
           <span>Pluck each belt; the accelerometer hears it and tells you which way to turn.</span></button>
         <a class="test-card off" id="beltOff" href="https://docs.kalico.gg/Measuring_Resonances.html"
@@ -263,8 +263,8 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
       <h2 class="section">2. A filament</h2>
       <div class="card lock-note" id="lockNote" hidden>
         <h2>Test prints are locked</h2>
-        <p>Printune prints nothing until the machine setup is done: your bed area, toolhead size and gantry
-          height, measured on your printer, and the risk accepted. The belts, the Z offset, the input shaper and
+        <p>Printune prints nothing until the machine setup is done: your bed area, toolhead size, gantry
+          height and nozzle protrusion, measured on your printer, and the risk accepted. The belts, the Z offset, the input shaper and
           the hands-on tools work without it.</p>
         <button type="button" class="block primary" id="lockSetupBtn">Machine setup</button>
       </div>
@@ -330,7 +330,7 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
       <div class="err-box" id="setupErr" hidden></div>
       <p>Printune prints several tests on one plate, one after the other. While it prints a later test, the
         toolhead and the X gantry move next to and over the earlier ones. A finished print that is taller than the
-        gap under the toolhead or under the gantry gets hit: prints knocked off, a bent nozzle, skipped steps or
+        gap under the toolhead (the nozzle protrusion) or under the gantry gets hit: prints knocked off, a bent nozzle, skipped steps or
         worse. Printune places the tests with the numbers below. <b>It assumes none of them: they are yours to
         measure.</b></p>
       <svg class="diagram" viewBox="0 0 340 170" role="img" aria-labelledby="dgTitle">
@@ -411,16 +411,61 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
       </div>
 
       <div class="field">
-        <span class="label"><span class="stepnum">4</span>Your responsibility</span>
+        <label for="protIn"><span class="stepnum">4</span>Nozzle protrusion (mm)</label>
+        <input type="number" id="protIn" inputmode="decimal" step="0.1" min="0">
+        <p class="help">From the nozzle tip up to the lowest other part of the toolhead: fan duct, probe, silicone
+          sock, a screw head, anything that hangs down. A finished print at least 0.2 mm lower than this may sit
+          under the toolhead while it prints next to it (the nozzle never goes below the first layer, so the real
+          gap is bigger); a taller one is kept outside the toolhead box.</p>
+        <details class="sub">
+          <summary>How to measure the nozzle protrusion</summary>
+          <svg class="diagram" viewBox="0 0 340 130" role="img" aria-labelledby="dgProtTitle">
+            <title id="dgProtTitle">Side view: the nozzle tip rests on a card on the bed; the nozzle protrusion is the height from the card up to the lowest other part of the toolhead, here the fan duct.</title>
+            <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+            <rect x="105" y="10" width="95" height="40" rx="4" fill="none" stroke="currentColor" stroke-width="2"/>
+            <text x="152" y="34" font-size="11" text-anchor="middle" fill="currentColor">toolhead</text>
+            <rect x="145" y="50" width="20" height="24" fill="none" stroke="currentColor" stroke-width="2"/>
+            <path d="M149 74 h12 l-5 22 h-2 z" class="accent" fill="currentColor"/>
+            <path d="M200 22 h30 v36 l-12 12 h-18 z" fill="none" stroke="currentColor" stroke-width="2"/>
+            <text x="236" y="16" font-size="11" fill="currentColor">duct, probe or sock:</text>
+            <text x="236" y="29" font-size="11" fill="currentColor">the lowest part</text>
+            <line x1="200" y1="70" x2="262" y2="70" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+            <rect x="110" y="96" width="160" height="5" fill="currentColor" opacity=".35"/>
+            <line x1="60" y1="104" x2="320" y2="104" stroke="currentColor" stroke-width="3"/>
+            <line x1="255" y1="72" x2="255" y2="94" class="accent" stroke="currentColor" stroke-width="1.5" marker-start="url(#ah2)" marker-end="url(#ah2)"/>
+            <text x="266" y="80" font-size="11" fill="currentColor">nozzle</text>
+            <text x="266" y="93" font-size="11" fill="currentColor">protrusion</text>
+            <text x="90" y="122" font-size="11" text-anchor="middle" fill="currentColor">bed</text>
+            <text x="190" y="122" font-size="11" text-anchor="middle" fill="currentColor">card, nozzle tip on it</text>
+          </svg>
+          <ol class="how">
+            <li>Let the hotend cool down. Lay a flat, stiff card on the bed (a business card or an old bank card).</li>
+            <li>Lower the nozzle in small steps until its tip just touches the card.</li>
+            <li>Look at the toolhead from the side and find its lowest part other than the nozzle: the fan duct, the
+              probe (a pin probe with its pin up; its body counts), the silicone sock, a screw head.</li>
+            <li>Measure from the card straight up to that part with the depth rod of your calipers, or slide
+              stacked cards under it until they touch. Take off the card's thickness only if you measured from the bed.</li>
+            <li>Or off the printer: calipers from the nozzle tip up to the bottom of that part.</li>
+            <li>Round down by a few tenths, and measure again after a new nozzle, duct, sock or probe.</li>
+          </ol>
+        </details>
+      </div>
+
+      <div class="field">
+        <span class="label"><span class="stepnum">5</span>Your responsibility</span>
         <label class="check" for="riskCk"><input type="checkbox" id="riskCk">
-          <span>I measured these values myself on my printer. I accept that Printune and its authors take no
+          <span>I measured these values myself on my printer. I accept that Printune and its authors take zero
             responsibility for the G-code it generates, for collisions or for any damage. Printune comes without
             any warranty (GPL-3.0, sections 15 and 16).</span></label>
       </div>
       <p class="small muted" id="setupState"></p>
       <button type="button" class="big" id="setupSaveBtn" style="min-height:64px">Save machine setup</button>
-      <p class="help">Saved under [printune] in printer.cfg (SAVE_CONFIG, no restart). It also writes any other
-        change that is waiting for SAVE_CONFIG. Change it any time here or with _PRINTUNE_SETUP in the console.</p>
+      <p class="help">Saved under [printune] in printer.cfg with SAVE_CONFIG, without a restart. If other changes
+        are waiting for SAVE_CONFIG (a new Z offset, for example), it does not save: run SAVE_CONFIG yourself then,
+        which saves them and the machine setup together and restarts, so nothing is written that the printer
+        isn't running with. Changing a value, here or by hand in printer.cfg, means accepting the risk again.
+        Change it any time here or with _PRINTUNE_SETUP in the console.</p>
       <button type="button" class="block text-btn" id="setupBackBtn" style="margin-top:6px">Back</button>
     </div>
   </section>
@@ -515,7 +560,7 @@ details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600
       <button type="button" class="danger" id="cancelBtn">Cancel</button>
     </div>
   </section>
-  <p class="disclaimer">Printune comes without any warranty. You run the G-code it generates at your own risk; we take no responsibility for what it does.</p>
+  <p class="disclaimer">Printune comes without any warranty. You run the G-code it generates at your own risk; we take zero responsibility for what it does.</p>
 </main>
 <div id="toast" role="alert" hidden></div>
 
@@ -1150,7 +1195,7 @@ async function startSession() {
   $("formErr").hidden = true;
   if (!form.tests.size) return;
   if (!setupReady()) { openSetup(); return; }
-  if (!(await ask("Make sure the plate is clean and empty. Printune generates the G-code for this print; you run it at your own risk, and we take no responsibility for what it does. Stay near the printer. Start?", "Start"))) return;
+  if (!(await ask("Make sure the plate is clean and empty. Printune generates the G-code for this print; you run it at your own risk, and we take zero responsibility for what it does. Stay near the printer. Start?", "Start"))) return;
   saveForm();
   store("printune.soakOn", pt().enclosed && form.soak ? 1 : 0);
   // a results prompt from the last session must not show during this one
@@ -1181,16 +1226,18 @@ function formError(text) {
 function setupSt() { return pt().setup || {}; }
 function setupReady() { return setupSt().ready === true; }
 function g1(v) { return String(Math.round(Number(v) * 10) / 10); }
+function g2(v) { return String(Math.round(Number(v) * 100) / 100); }
 const BED_IDS = ["bx0", "by0", "bx1", "by1"];
 const BOX_IDS = ["tXn", "tXp", "tYn", "tYp"];
 
 function fillSetup() {
   const st = setupSt();
   const bed = Array.isArray(st.bed_area) ? st.bed_area : (Array.isArray(st.bed_hint) ? st.bed_hint : null);
-  BED_IDS.forEach((id, i) => { $(id).value = bed ? g1(bed[i]) : ""; });
+  BED_IDS.forEach((id, i) => { $(id).value = bed ? g2(bed[i]) : ""; });
   const box = Array.isArray(st.toolhead_box) ? st.toolhead_box : null;
   BOX_IDS.forEach((id, i) => { $(id).value = box ? g1(Math.abs(box[i])) : ""; });
   $("gantryIn").value = st.gantry_height ? g1(st.gantry_height) : "";
+  $("protIn").value = (st.nozzle_protrusion !== null && st.nozzle_protrusion !== undefined) ? g2(st.nozzle_protrusion) : "";
   $("riskCk").checked = !!st.accepted;
   $("setupErr").hidden = true;
 }
@@ -1205,28 +1252,32 @@ function openSetup() {
 // the setup command from the form, or an error text
 function readSetup() {
   const num = (id) => { const t = $(id).value.trim(); return t === "" ? NaN : Number(t); };
-  const bed = BED_IDS.map(num), box = BOX_IDS.map(num), gantry = num("gantryIn");
+  const r2 = (v) => Math.round(v * 100) / 100;   // the plugin keeps 0.01 mm
+  const bed = BED_IDS.map(num).map(r2), box = BOX_IDS.map(num), gantry = num("gantryIn"), prot = num("protIn");
   if (bed.some((v) => !Number.isFinite(v))) return { err: "Enter all four numbers of the bed area." };
   if (bed[2] - bed[0] < 50 || bed[3] - bed[1] < 50) return { err: "The bed area runs from X from to X to and Y from to Y to, at least 50 mm each way." };
   const ax = setupSt().axes;
-  if (Array.isArray(ax) && (bed[0] < ax[0] || bed[1] < ax[1] || bed[2] > ax[2] || bed[3] > ax[3])) {
+  // the same test as the plugin's, on the same rounded numbers
+  if (Array.isArray(ax) && (bed[0] < ax[0] - 1e-6 || bed[1] < ax[1] - 1e-6 || bed[2] > ax[2] + 1e-6 || bed[3] > ax[3] + 1e-6)) {
     return { err: "The bed area reaches past the axis limits (X " + ax[0] + " to " + ax[2] + ", Y " + ax[1] + " to " + ax[3] + ")." };
   }
   if (box.some((v) => !Number.isFinite(v) || v <= 0 || v > 300)) return { err: "Enter the toolhead box: four distances from the nozzle, each more than 0 and at most 300 mm." };
   if (!Number.isFinite(gantry) || gantry < 1 || gantry > 1000) return { err: "Enter the gantry height in mm." };
+  if (!Number.isFinite(prot) || prot < 0 || prot > 50) return { err: "Enter the nozzle protrusion in mm (0 to 50)." };
   const f = (v) => String(Math.round(v * 100) / 100);
   return {
     cmd: "_PRINTUNE_SETUP BED=" + bed.map(f).join(",") + " TOOLHEAD=-" + f(Math.abs(box[0])) + "," + f(Math.abs(box[1])) +
-      ",-" + f(Math.abs(box[2])) + "," + f(Math.abs(box[3])) + " GANTRY=" + f(gantry) + " ACCEPT=1 SAVE=1",
+      ",-" + f(Math.abs(box[2])) + "," + f(Math.abs(box[3])) + " GANTRY=" + f(gantry) + " PROTRUSION=" + f(prot) +
+      " ACCEPT=1 SAVE=1",
   };
 }
 
 function setupSummary(st) {
   const b = st.bed_area, t = st.toolhead_box;
-  if (!Array.isArray(b) || !Array.isArray(t) || !st.gantry_height) return "";
+  if (!Array.isArray(b) || !Array.isArray(t) || !st.gantry_height || st.nozzle_protrusion == null) return "";
   return "Bed X " + g1(b[0]) + " to " + g1(b[2]) + ", Y " + g1(b[1]) + " to " + g1(b[3]) +
     "; toolhead -X " + g1(-t[0]) + ", +X " + g1(t[1]) + ", -Y " + g1(-t[2]) + ", +Y " + g1(t[3]) +
-    "; gantry " + g1(st.gantry_height) + " mm";
+    "; gantry " + g1(st.gantry_height) + " mm; nozzle protrusion " + g2(st.nozzle_protrusion) + " mm";
 }
 
 function renderSetup() {
@@ -1234,17 +1285,22 @@ function renderSetup() {
   const hint = Array.isArray(st.bed_hint) ? st.bed_hint : null;
   const mb = $("meshBtn");
   mb.hidden = !hint;
-  if (hint) mb.textContent = "Use the bed mesh area: X " + g1(hint[0]) + " to " + g1(hint[2]) + ", Y " + g1(hint[1]) + " to " + g1(hint[3]);
+  if (hint) mb.textContent = "Use the bed mesh area: X " + g2(hint[0]) + " to " + g2(hint[2]) + ", Y " + g2(hint[1]) + " to " + g2(hint[3]);
   const ax = st.axes;
   let help = "Keep it on the plate and away from clips, a wiper or a purge bucket. ";
   help += hint ? "The bed mesh area (where your probe has been) cut to the axis limits is a safe start. "
     : (st.bed_hint_note ? st.bed_hint_note + ". " : "");
-  if (Array.isArray(ax)) help += "Axis limits: X " + g1(ax[0]) + " to " + g1(ax[2]) + ", Y " + g1(ax[1]) + " to " + g1(ax[3]) + ".";
+  if (Array.isArray(ax)) help += "Axis limits: X " + ax[0] + " to " + ax[2] + ", Y " + ax[1] + " to " + ax[3] + ".";
   if (st.orca_area) help += " orca_settings also sets printable_area (" + st.orca_area + "): the tests stay inside both.";
   $("bedHelp").textContent = help;
   let state;
   if (st.ready) state = "Saved and accepted: " + setupSummary(st) + (st.unsaved ? " (not written to printer.cfg yet)" : "") + ".";
-  else if (st.bed_area || st.toolhead_box || st.gantry_height) state = "Not done yet: " + (st.missing || []).join(", ").replace("risk", "accepting the risk") + " missing.";
+  else if (st.bed_area || st.toolhead_box || st.gantry_height || st.nozzle_protrusion != null) {
+    const names = { bed_area: "bed area", toolhead_box: "toolhead box", gantry_height: "gantry height",
+      nozzle_protrusion: "nozzle protrusion", risk: "accepting the risk" };
+    state = "Not done yet: " + (st.missing || []).map((m) => names[m] || m).join(", ") + " missing." +
+      (st.accept_note ? " Note: " + st.accept_note + "." : "");
+  }
   else state = "Not done yet. Test prints stay locked until it is.";
   $("setupState").textContent = state;
   $("setupSaveBtn").disabled = !$("riskCk").checked;
@@ -1394,7 +1450,7 @@ function renderHome() {
   $("setupBtn").classList.toggle("done", ready);
   $("setupSub").textContent = ready
     ? setupSummary(st) + (st.unsaved ? " (not written to printer.cfg yet)" : "")
-    : "Required before any test print: your bed area, toolhead size and gantry height, measured on your printer.";
+    : "Required before any test print: your bed area, toolhead size, gantry height and nozzle protrusion, measured on your printer.";
   show("lockNote", !ready);
   for (const id of ["wizardBtn", "wizCards", "advBtn", "advCards"]) $(id).classList.toggle("locked", !ready);
   const tools = pt().tools || {};
@@ -1521,11 +1577,11 @@ function wire() {
   $("meshBtn").onclick = () => {
     const h = setupSt().bed_hint;
     if (!Array.isArray(h)) return;
-    BED_IDS.forEach((id, i) => { $(id).value = g1(h[i]); });
+    BED_IDS.forEach((id, i) => { $(id).value = g2(h[i]); });
     $("riskCk").checked = false;
     renderSetup();
   };
-  for (const id of BED_IDS.concat(BOX_IDS, ["gantryIn"])) {
+  for (const id of BED_IDS.concat(BOX_IDS, ["gantryIn", "protIn"])) {
     // new numbers need a new confirmation (the plugin asks again too)
     $(id).addEventListener("input", () => { $("riskCk").checked = false; renderSetup(); });
   }

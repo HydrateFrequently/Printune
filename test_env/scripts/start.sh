@@ -36,9 +36,17 @@ if [ -f /home/pi/host/printune.py ]; then
   # Machine setup: SETUP=1 (default) gives the virtual printer a known geometry so scripted
   # runs aren't blocked; SETUP=0 leaves it out, to try the setup step (the page saves it into
   # printer.cfg). Values in this included file win over saved ones, so use SETUP=0 to edit them.
+  # The acceptance is the fingerprint of the four values (printune_gen.geometry_hash), so it is
+  # computed here from the same values. The test printer uses a fixed nozzle protrusion.
   if [ "${SETUP:-1}" = 1 ]; then
-    printf 'bed_area: %s\ntoolhead_box: %s\ngantry_height: %s\nsetup_accepted: True\n' \
-      "${SETUP_BED:-5,5,370,383}" "${SETUP_TOOLHEAD:--35,35,-45,40}" "${SETUP_GANTRY:-40}" >> $plug
+    sb="${SETUP_BED:-5,5,370,383}" st="${SETUP_TOOLHEAD:--35,35,-45,40}"
+    sg="${SETUP_GANTRY:-40}" sp="${SETUP_PROTRUSION:-3}"
+    sh=$(python3 -c 'import sys; sys.path.insert(0, "/home/pi/host"); import printune_gen as g
+print(g.geometry_hash(g.parse_bed_area(sys.argv[1]), g.parse_toolhead_box(sys.argv[2]),
+                      g.parse_gantry_height(sys.argv[3]), g.parse_nozzle_protrusion(sys.argv[4])))' \
+      "$sb" "$st" "$sg" "$sp") || sh=no
+    printf 'bed_area: %s\ntoolhead_box: %s\ngantry_height: %s\nnozzle_protrusion: %s\nsetup_accepted: %s\n' \
+      "$sb" "$st" "$sg" "$sp" "$sh" >> $plug
   fi
 else
   rm -f /home/pi/kalico/klippy/plugins/printune.py

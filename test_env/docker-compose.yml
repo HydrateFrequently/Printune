@@ -17,6 +17,7 @@ services:
       - SETUP_BED=5,5,370,383          # test values for this virtual printer, not for a real one
       - SETUP_TOOLHEAD=-35,35,-45,40
       - SETUP_GANTRY=40
+      - SETUP_PROTRUSION=3             # nozzle protrusion: a fixed test value
       - PUID=1000     # your user id and group id on the host (`id -u`, `id -g`),
       - PGID=1000     #   so files in gcodes/ and logs/ stay yours
     ports:

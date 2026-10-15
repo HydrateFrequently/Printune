@@ -84,6 +84,15 @@ def render(H, box, out, cam, step=1, size=(1800, 1200), title=None, towers=()):
 def main(gpath, outdir):
     H = np.load(gpath + ".height.npy").copy()
     d = np.load(gpath + ".paths.npz")
+    # check_gcode.py's heightmap starts at its origin (the bed's corner less a margin): this script
+    # works in bed coordinates from 0, so shift it there
+    ox, oy = (float(v) for v in d["origin"]) if "origin" in d.files else (0.0, 0.0)
+    for axis, o in ((0, ox), (1, oy)):
+        n = int(round(abs(o) / RES))
+        if o < 0:
+            H = H[n:] if axis == 0 else H[:, n:]
+        elif o > 0:
+            H = np.concatenate([np.zeros((n, H.shape[1]) if axis == 0 else (H.shape[0], n), H.dtype), H], axis)
     segs, objs, trav = d["segs"], d["obj"], d["trav"]
     towers = []
     for name in sorted(set(objs)):
