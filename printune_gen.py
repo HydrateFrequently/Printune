@@ -171,6 +171,7 @@ OPTIONS = {
     "mvs": "5-30/1",            # max volumetric flow tower: flow per band, mm3/s
     "mvs_band": 3.0,            # height of each flow band, mm
     "mvs_fan": 0,               # 0 = fan_max_speed
+    "scv": 5.0,                 # the printer's square_corner_velocity (the plugin sets it)
     "clearance": 0,             # toolhead radius for the collision check, 0 = Orca extruder_clearance_radius
     "low_ok": 1.2,              # objects lower than this may sit under the toolhead
     "margin": 12.0,             # keep-out from the printable-area edge
@@ -227,6 +228,7 @@ class Settings:
         self.mvs = _num(c["filament_max_volumetric_speed"]) or 1e9
         # the printer's own limits (the plugin sets them from [printer])
         self.vmax = min(_num(c["machine_max_speed_x"]), _num(c["machine_max_speed_y"])) or 1e9
+        self.scv = float(self.opt["scv"]) or 5.0
         self.amax = min(_num(c["machine_max_acceleration_x"]), _num(c["machine_max_acceleration_y"])) or 1e9
 
         a0 = _num(c["default_acceleration"])
@@ -444,11 +446,14 @@ class Writer:
         L = math.hypot(x - self.x, y - self.y)
         e = L * a * scale / self.s.fil_area
         self.e_total += e
-        self.g("G1 X%.3f Y%.3f Z%.4f E%.5f F%d" % (x, y, z, e, round(v * 60)))
+        # 4 decimals: rounding to 0.001 on 0.26 mm segments bends them enough for Kalico to slow down
+        self.g("G1 X%.4f Y%.4f Z%.4f E%.5f F%d" % (x, y, z, e, round(v * 60)))
         self.t_total += L / v          # one continuous move at constant speed
         self.paths.append((self.x, self.y, x, y, z, w, kind))
         self.x, self.y, self.z = x, y, z
         self.max_h = max(self.max_h, z)
+        # what the printer reads (for the corner check)
+        return (round(x, 4), round(y, 4), round(z, 4), round(e, 5), round(v * 60) / 60.0)
 
     def polyline(self, pts, w, h, v, accel=None, kind="ext", closed=False):
         pts = list(pts)
@@ -924,13 +929,42 @@ MVS_R = 30.0            # wall centre-line radius, mm (60 mm tower)
 MVS_BASE = 3.0          # the square base reaches this far past the wall, mm
 MVS_H_RATIO = 0.75      # layer height / nozzle (0.30 mm on a 0.4 nozzle)
 MVS_W_RATIO = 1.5       # line width / nozzle (0.60 mm on a 0.4 nozzle)
-MVS_BUMP = 0.8          # marker bump, mm outward
-MVS_BUMP_L = 12.0       # marker arc length, mm
+MVS_BUMP = 0.6          # marker bump, mm outward (less if the acceleration can't take it)
+MVS_BUMP_MIN = 0.25     # smallest bump still worth printing
+MVS_BUMP_L = 20.0       # marker arc length, mm: long and shallow, so no corner slows the print
 MVS_BUMP_REVS = 3       # marker height, revolutions
 MVS_MARK_DEG = 270.0    # markers face the front (-Y)
 MVS_START_DEG = 90.0    # the spiral starts at the back
-MVS_SEG_DEG = 2.0       # one segment per 2 degrees (chord error < 0.005 mm)
+MVS_SEG_DEG = 1.0       # one segment per degree (0.52 mm): Kalico's corner rule allows ~520 mm/s at SCV 5
+MVS_BUMP_SEG_DEG = 0.5  # finer over the bumps
 TYPICAL_H, TYPICAL_W = 0.2, 0.45   # "typical" print line for the mm/s equivalent
+SQRT2_1 = math.sqrt(2.0) - 1.0
+
+
+def kalico_junction_v2(d0, d1, len0, len1, er0, er1, accel, scv, icv=1.0):
+    """Highest speed^2 Kalico allows through the joint of two moves: toolhead.Move.calc_junction
+    (junction deviation and approximated centripetal) and the extruder's instant_corner_v rule.
+    d0, d1: unit XYZ directions; len: move lengths; er: E per mm of move."""
+    lim = []
+    if er0 != er1:
+        lim.append((icv / abs(er1 - er0)) ** 2)
+    jcos = -(d0[0] * d1[0] + d0[1] * d1[1] + d0[2] * d1[2])
+    sin_t = math.sqrt(max(0.5 * (1.0 - jcos), 0.0))
+    cos_t = math.sqrt(max(0.5 * (1.0 + jcos), 0.0))
+    if 1.0 - sin_t > 0.0 and cos_t > 0.0:
+        r_jd = sin_t / (1.0 - sin_t)
+        jd = scv * scv * SQRT2_1 / accel          # Kalico: junction_deviation = scv^2 (sqrt2 - 1) / accel
+        qtan = 0.25 * sin_t / cos_t
+        lim += [r_jd * jd * accel, 2.0 * len0 * accel * qtan, 2.0 * len1 * accel * qtan]
+    return min(lim) if lim else 1e18
+
+
+def circle_v_limit(r, seg_deg, accel, scv):
+    """Kalico's corner speed limit on a circle of radius r drawn in seg_deg segments."""
+    a = math.radians(seg_deg)
+    L = 2 * r * math.sin(a / 2)
+    d0, d1 = (1.0, 0.0, 0.0), (math.cos(a), math.sin(a), 0.0)
+    return math.sqrt(kalico_junction_v2(d0, d1, L, L, 0, 0, accel, scv))
 
 
 class MVSTower:
@@ -943,6 +977,12 @@ class MVSTower:
         self.band_h = band_h
         self.flows = flows
         self.top = self.base_h + len(flows) * band_h
+        v = self.flows[-1] / self.area
+        # bump as big as the acceleration allows at the top speed (curvature = 1/R + A (2 pi / L)^2 / 2)
+        k_max = s.amax / (1.1 * v * v) - 1.0 / MVS_R
+        self.bump = max(MVS_BUMP_MIN, min(MVS_BUMP, 2 * k_max * (MVS_BUMP_L / (2 * math.pi)) ** 2))
+        self.k_max = 1.0 / MVS_R + self.bump * (2 * math.pi / MVS_BUMP_L) ** 2 / 2
+        self.moves = []
 
     def marks(self):
         """Band indexes whose flow passes a multiple of 5 mm3/s (the first band has none)."""
@@ -950,45 +990,86 @@ class MVSTower:
         return {i for i in range(1, len(f)) if math.floor(f[i] / 5.0 + 1e-6) > math.floor(f[i - 1] / 5.0 + 1e-6)}
 
     def accel(self):
-        """Enough acceleration to hold the top speed around the circle (v^2/r), within the printer's limit."""
+        """Enough acceleration for the tightest curve (a bump) at the top speed, within the printer's limit."""
         s = self.s
-        need = 1.15 * (self.flows[-1] / self.area) ** 2 / MVS_R
+        need = 1.1 * (self.flows[-1] / self.area) ** 2 * self.k_max
         return min(s.amax, max(s.a_outer, need)), need
+
+    def _bump_d(self, deg):
+        """Arc distance (mm) from the marker centre."""
+        return ((deg - MVS_MARK_DEG + 180.0) % 360.0 - 180.0) * math.pi / 180.0 * MVS_R
 
     def _radius(self, deg, zrel_band, band, marks):
         if band not in marks or zrel_band >= MVS_BUMP_REVS * self.h:
             return MVS_R
-        d = ((deg - MVS_MARK_DEG + 180.0) % 360.0 - 180.0) * math.pi / 180.0 * MVS_R
+        d = self._bump_d(deg)
         if abs(d) >= MVS_BUMP_L / 2:
             return MVS_R
-        return MVS_R + MVS_BUMP * (1 + math.cos(2 * math.pi * d / MVS_BUMP_L)) / 2
+        return MVS_R + self.bump * (1 + math.cos(2 * math.pi * d / MVS_BUMP_L)) / 2
 
     def draw(self, wr, cx, cy):
         h, nb = self.h, len(self.flows)
         marks = self.marks()
-        per_rev = int(round(360.0 / MVS_SEG_DEG))
-        n = int(round((self.top - self.base_h) / h * per_rev))
+        fine = int(round(360.0 / MVS_BUMP_SEG_DEG))           # grid steps per revolution
+        every = int(round(MVS_SEG_DEG / MVS_BUMP_SEG_DEG))
+        n = int(round((self.top - self.base_h) / h * fine))
+        near = MVS_BUMP_L / 2 + 2 * MVS_R * math.radians(MVS_SEG_DEG)
         pt = lambda deg, r: (cx + r * math.cos(math.radians(deg)), cy + r * math.sin(math.radians(deg)))
         x, y = pt(MVS_START_DEG, MVS_R)
         wr.travel(x, y, force=True)
         wr.z_to(self.base_h)
         wr.unretract()
-        wr.set_accel(self.accel()[0])      # after the travel, which uses the travel acceleration
+        self.accel_used = self.accel()[0]
+        wr.set_accel(self.accel_used)      # after the travel, which uses the travel acceleration
+        self.moves = [(round(x, 4), round(y, 4), round(self.base_h, 4), 0.0, 0.0, -1)]
+        k0 = 0
         for k in range(1, n + 1):
-            revs = k / float(per_rev)
+            deg = MVS_START_DEG + 360.0 * k / fine
+            zb = (k - 0.5) / fine * h
+            band = min(int(zb / self.band_h), nb - 1)
+            bumpy = band in marks and abs(self._bump_d(deg % 360.0)) < near
+            if k % every and not bumpy and k != n:
+                continue
+            revs = k / float(fine)
             z = self.base_h + revs * h
-            zm = self.base_h + (k - 0.5) / per_rev * h      # the segment's middle decides its band
+            zm = self.base_h + (k + k0) / 2.0 / fine * h       # the segment's middle decides its band
             band = min(int((zm - self.base_h) / self.band_h), nb - 1)
-            deg = MVS_START_DEG + 360.0 * revs
             r = self._radius(deg % 360.0, zm - self.base_h - band * self.band_h, band, marks)
             # first revolution: the gap under the nozzle grows from 0 to h, so does the flow
-            scale = min(1.0, (k - 0.5) / per_rev)
-            wr.spiral(*pt(deg, r), z, self.area, self.flows[band] / self.area, scale, w=self.w)
+            scale = min(1.0, (k + k0) / 2.0 / fine)
+            self.moves.append(wr.spiral(*pt(deg, r), z, self.area, self.flows[band] / self.area, scale,
+                                        w=self.w) + (band,))
+            k0 = k
         # one flat revolution at the top, flow tapering to 0, for a level top edge
+        per_rev = int(round(360.0 / MVS_SEG_DEG))
         for k in range(1, per_rev + 1):
-            deg = MVS_START_DEG + 360.0 * (n / float(per_rev) + k / float(per_rev))
-            wr.spiral(*pt(deg, MVS_R), self.top, self.area, self.flows[-1] / self.area,
-                      1.0 - (k - 0.5) / per_rev, w=self.w)
+            deg = MVS_START_DEG + 360.0 * (n / float(fine) + k / float(per_rev))
+            self.moves.append(wr.spiral(*pt(deg, MVS_R), self.top, self.area, self.flows[-1] / self.area,
+                                        1.0 - (k - 0.5) / per_rev, w=self.w) + (nb,))
+
+    def check_corners(self, scv, icv=1.0):
+        """Run Kalico's junction rule over the moves as written; returns the bands where a
+        corner would make Kalico go slower than the band's speed: {band: (slowest, wanted) mm/s}."""
+        out = {}
+        mv = self.moves
+        prev = None
+        for i in range(1, len(mv)):
+            x0, y0, z0 = mv[i - 1][:3]
+            x1, y1, z1, e, v, band = mv[i]
+            dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+            L = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if L < 1e-9:
+                continue
+            cur = ((dx / L, dy / L, dz / L), L, e / L, v, band)
+            if prev is not None and band < len(self.flows):
+                v2 = kalico_junction_v2(prev[0], cur[0], prev[1], cur[1], prev[2], cur[2],
+                                        self.accel_used, scv, icv)
+                want = min(prev[3], cur[3])
+                if v2 < (want * 0.999) ** 2:
+                    lo = out.get(band, (1e9, want))[0]
+                    out[band] = (min(lo, math.sqrt(v2)), want)
+            prev = cur
+        return out
 
 
 # --------------------------------------------------------------------------
@@ -1025,14 +1106,21 @@ class Session:
             except ValueError:
                 raise SystemExit("Printune: can't read mvs_band=%s" % o["mvs_band"])
             tw = MVSTower(s, flows, band)
-            # the printer's max_velocity caps the flow: clamp the top bands to what it reaches
-            fmax = math.floor(s.vmax * tw.area * 10 + 1e-6) / 10.0
+            # the printer's limits cap the speed: max_velocity, and Kalico's corner rule on the
+            # 1-degree segments (square_corner_velocity, and max_accel for the curve)
+            lims = [(s.vmax, "max_velocity (%.0f mm/s)" % s.vmax),
+                    (circle_v_limit(MVS_R, MVS_SEG_DEG, 1e9, s.scv) / 1.02,
+                     "square_corner_velocity (%g)" % s.scv),
+                    (math.sqrt(s.amax / (1.1 * (1.0 / MVS_R + MVS_BUMP_MIN * (2 * math.pi / MVS_BUMP_L) ** 2 / 2))),
+                     "max_accel (%.0f) around the tower" % s.amax)]
+            vcap, why = min(lims)
+            fmax = math.floor(vcap * tw.area * 10 + 1e-6) / 10.0
             if flows[-1] > fmax + 1e-9:
                 flows = [f for f in flows if f < fmax - 1e-9] + [fmax]
-                self.warn.append("max flow test: %s mm3/s needs %.0f mm/s, above max_velocity (%.0f mm/s); "
-                                 "the top band prints at %s mm3/s" % (fmt_val(tw.flows[-1], 2),
-                                                                     tw.flows[-1] / tw.area, s.vmax,
-                                                                     fmt_val(fmax, 1)))
+                self.warn.append("max flow test: %s mm3/s needs %.0f mm/s; %s allows %.0f mm/s, "
+                                 "so the top band prints at %s mm3/s" % (fmt_val(tw.flows[-1], 2),
+                                                                         tw.flows[-1] / tw.area, why, vcap,
+                                                                         fmt_val(fmax, 1)))
             # lower bands when the tower would be too tall for the printer
             room = s.max_z - 5 - tw.base_h
             if len(flows) * band > room:
@@ -1042,10 +1130,8 @@ class Session:
                                      "use fewer flow steps")
                 self.warn.append("max flow test: %.1f mm bands to fit the printer's height" % band)
             self.mvs = MVSTower(s, flows, band)
-            a, need = self.mvs.accel()
-            if need > a + 1:
-                self.warn.append("max flow test: the top band needs %.0f mm/s2 to hold its speed around the "
-                                 "tower, above max_accel (%.0f); Kalico slows it down there" % (need, s.amax))
+            if self.mvs.bump < MVS_BUMP - 1e-6:
+                self.warn.append("max flow test: %.2f mm marker bumps (max_accel %.0f)" % (self.mvs.bump, s.amax))
         self.objs = []
         self.t_print = int(round(s.t_nozzle))
         self.t_first = int(round(s.t_first))
@@ -1091,6 +1177,7 @@ class Session:
 
         col_r = (X(0.5) + PATCH / 2 + bx1 - m - PATCH) / 2
         col_l = (bx0 + m + PATCH + X(0.5) - PATCH / 2) / 2
+        self.col_r = col_r
         size0 = float(s.opt["em_size"])
         hc = self._em_block_h(len(self.em_vals), size0, 2)
         hf = self._em_block_h(len(self.em_fine), size0, 2)
@@ -1131,39 +1218,16 @@ class Session:
                 labs = [fmt_val(d * 100, 1) for d in self.em_fine]
                 self.em_f = self._place_em(labs, "EM_F", "em_fine", (col_l, by1 - m - hf / 2))
 
-        # retraction towers: right column, front to back, hottest first
-        self.towers = []
-        if "ret" not in sk:
-            base_h, zs = tower_geometry(s, len(self.ret_vals))
-            n = len(self.temps)
-            fy = [Y(0.14), Y(0.49), Y(0.84)] if n == 3 else [Y(0.14 + 0.7 * i / max(1, n - 1)) for i in range(n)]
-            for i, t in enumerate(self.temps):
-                def build(cx, cy, i=i, t=t):
-                    bw, bd = TOWER_PITCH + RING_D + 4, RING_D + 4
-                    lw_, lh_ = label_size(str(t))
-                    box = (cx - bw / 2, cy - bd / 2 - lh_ - 9, cx + bw / 2, cy + bd / 2)
-                    ob = Obj("RET_%d" % (i + 1), box, zs[-1], "ret")
-                    ob.tower = (cx, cy, bw, bd, t)
-                    return [ob]
-                got = self._place([(build, (col_r, fy[i]))])
-                if not got:
-                    raise SystemExit("Printune: a retraction tower does not fit on this bed "
-                                     "(too few rings for its height, or the bed is too small)")
-                self.towers += got
-
-        # max flow tower: last test, anywhere it fits (prefers the middle)
-        self.mvs_obj = None
-        if self.mvs:
-            hb = MVS_R + MVS_BASE
-
-            def build(cx, cy):
-                ob = Obj("MVS", (cx - hb, cy - hb - 7, cx + hb, cy + hb), self.mvs.top, "mvs")
-                ob.c = (cx, cy)
-                return [ob]
-            got = self._place([(build, (X(0.5), Y(0.5)))])
-            if not got:
-                raise SystemExit("Printune: the max flow tower does not fit on this bed")
-            self.mvs_obj = got[0]
+        # retraction towers and the max flow tower (printed last). The tower is placed first, so
+        # the retraction towers fit around it; if that pushes anything onto a later plate, the
+        # retraction towers go first instead (a plate printed earlier must not hold the tower).
+        saved = [list(p) for p in self.plates]
+        self._place_mvs(X, Y)
+        self._place_towers(Y)
+        if self.mvs_obj and self.towers and max(o.plate for o in self.towers) > self.mvs_obj.plate:
+            self.plates = saved
+            self._place_towers(Y)
+            self._place_mvs(X, Y)
 
         # extra patches: printed right after the first round, so they only need to stay
         # off the other objects of plate 1 (they are low, the clearance rule doesn't apply)
@@ -1222,6 +1286,41 @@ class Session:
         if len(self.plates) > 1:
             self.warn.append("this bed needs %d plates: the session pauses so you can clear the plate"
                              % len(self.plates))
+
+    def _place_towers(self, Y):
+        s, sk, col_r = self.s, self.s.skip, self.col_r
+        self.towers = []
+        if "ret" not in sk:
+            base_h, zs = tower_geometry(s, len(self.ret_vals))
+            n = len(self.temps)
+            fy = [Y(0.14), Y(0.49), Y(0.84)] if n == 3 else [Y(0.14 + 0.7 * i / max(1, n - 1)) for i in range(n)]
+            for i, t in enumerate(self.temps):
+                def build(cx, cy, i=i, t=t):
+                    bw, bd = TOWER_PITCH + RING_D + 4, RING_D + 4
+                    lw_, lh_ = label_size(str(t))
+                    box = (cx - bw / 2, cy - bd / 2 - lh_ - 9, cx + bw / 2, cy + bd / 2)
+                    ob = Obj("RET_%d" % (i + 1), box, zs[-1], "ret")
+                    ob.tower = (cx, cy, bw, bd, t)
+                    return [ob]
+                got = self._place([(build, (col_r, fy[i]))])
+                if not got:
+                    raise SystemExit("Printune: a retraction tower does not fit on this bed "
+                                     "(too few rings for its height, or the bed is too small)")
+                self.towers += got
+
+    def _place_mvs(self, X, Y):
+        self.mvs_obj = None
+        if self.mvs:
+            hb = MVS_R + MVS_BASE
+
+            def build(cx, cy):
+                ob = Obj("MVS", (cx - hb, cy - hb - 7, cx + hb, cy + hb), self.mvs.top, "mvs")
+                ob.c = (cx, cy)
+                return [ob]
+            got = self._place([(build, (X(0.5), Y(0.5)))])
+            if not got:
+                raise SystemExit("Printune: the max flow tower does not fit on this bed")
+            self.mvs_obj = got[0]
 
     def _place(self, builds, new_plate=True):
         """builds: [(build(cx, cy) -> objs, preferred (cx, cy))], tried in order. Place on the
@@ -1474,13 +1573,15 @@ class Session:
             wr.ret_macro = False
             if self.mvs_obj:
                 # pick the retraction (and tower temperature) now: the flow tower prints at it
-                self._cp(wr, self._ret_cp() + " NEXT=1")
+                self._cp(wr, self._ret_cp() + " NEXT=%s" % self.mvs_obj.name)
 
         # ---- 5. max volumetric flow ----
         if self.mvs_obj:
             g("; ----- 5. MAX VOLUMETRIC FLOW tower -----")
             g("M117 Printune 5/5 max flow")
-            self._plate(wr, [self.mvs_obj])
+            # the picks so far go into the preset now, so a cancel during the tower keeps them
+            g("_PRINTUNE_SAVEPOINT")
+            self._plate(wr, [self.mvs_obj], skip=True)
             self._mvs(wr, self.mvs_obj)
         self._park(wr)
         g("_PRINTUNE_END")
@@ -1533,6 +1634,11 @@ class Session:
         wr.g("; max flow bands: %s mm3/s, %.2f mm each from Z %.2f" % (
             ", ".join(fmt_val(f, 2) for f in m.flows), m.band_h, m.base_h))
         m.draw(wr, cx, cy)
+        slow = m.check_corners(s.scv)
+        if slow:
+            self.warn.append("max flow test: Kalico's corner rule slows bands %s (slowest %.0f of %.0f mm/s)" % (
+                ",".join(str(b + 1) for b in sorted(slow)), min(v[0] for v in slow.values()),
+                max(v[1] for v in slow.values())))
         wr.retract()
         obj_end(wr, o)
         wr.g("_PRINTUNE_APPLY")
@@ -1541,14 +1647,15 @@ class Session:
         bx0, by0, bx1, by1 = self.s.bed
         wr.safe_travel((bx0 + bx1) / 2, by1 - 10, clear=10.0)
 
-    def _plate(self, wr, objs):
+    def _plate(self, wr, objs, skip=False):
         """Checkpoint before a test that goes on a new plate: clear the plate, printer stays hot."""
         n = objs[0].plate
         if n <= 1:
             return
         # before every group on a later plate: the macro asks once per plate, and not at all
         # when this group was skipped (a later group on the same plate asks instead)
-        self._cp(wr, "_PRINTUNE_CP STEP=plate N=%d ALL=%s" % (n, ",".join(o.name for o in objs)))
+        names = ",".join(o.name for o in objs)
+        self._cp(wr, "_PRINTUNE_CP STEP=plate N=%d ALL=%s%s" % (n, names, (" SKIP=" + names) if skip else ""))
 
     def _cp(self, wr, cmd):
         """Checkpoint: park first so PAUSE (and RESUME's return move) keeps the nozzle off the prints."""

@@ -734,6 +734,8 @@ class Printune:
         cfg.update(self.orca)
         opts = {"temps": ",".join(str(t) for t in gen.tower_temps(tmin, tmax)),
                 "pa": self.pa_range, "ret": self.ret_range, "mvs": self.mvs_range or fil.get("mvs", gen.OPTIONS["mvs"])}
+        # Kalico's corner rule limits the max flow tower's speed
+        opts["scv"] = "%g" % (st.get("square_corner_velocity", 5.),)
         if self.toolhead_radius:
             opts["clearance"] = "%g" % (self.toolhead_radius,)
         return cfg, opts, mid
