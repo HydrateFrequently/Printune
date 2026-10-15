@@ -63,13 +63,14 @@ If you cancel half-way, press **Reset after cancel** in the PRINTUNE menu (or ru
 
 ## Tuning the printer
 
-Do these in order: the belts, then each filament (the wizard), then the input shaper. A ringing print or a pressure-advance pick reads better on a printer with the belts right and a tuned filament.
+Do these in order: the belts, the Z offset, then each filament (the wizard), then the input shaper. A ringing print or a pressure-advance pick reads better on a printer with the belts right and a tuned filament.
 
 | # | Step | Needs | What happens |
 |---|---|---|---|
 | 1 | **Belt tension** | a CoreXY printer with an accelerometer on the toolhead (`[resonance_tester]`) | Set the target frequency your printer's build guide gives, and pluck the same stretch of belt it measures: the same tension rings lower on a longer stretch. Choose 3 or 5 plucks. The toolhead parks in the middle. For each belt: a second of quiet, then pluck it like a guitar string about once a second; Printune averages the plucks. After both belts it says which belt to turn and about how far. CoreXY belts pull on each other, so both are measured after every turn: first both roughly to 20–10 Hz under the target, then one belt at a time until both are within `belt_tolerance` of the target and of each other. The turn it asks for gets more precise as it learns how much a turn changes your belts. With Shake&Tune, a belt comparison graph checks the result. |
-| 2 | **Filament** | | the Tuning Wizard, then Advanced tuning if you want it, see below |
-| 3 | **Input shaper** | an accelerometer and `[input_shaper]` | Kalico's `SHAPER_CALIBRATE`. Printune shows the pick for each axis and the highest acceleration that keeps corners sharp. The shaper is on right away; **Save to printer.cfg** runs `SAVE_CONFIG` (Kalico restarts). If the shaper changed, re-check pressure advance. With Shake&Tune, its shaper graphs run from the same step and show on the page. |
+| 2 | **Z offset** | a probe (`PROBE_CALIBRATE`), a Beacon (`BEACON_CALIBRATE`) or a Z endstop (`Z_ENDSTOP_CALIBRATE`) | Sets the starting Z offset with the printer's own paper test: Printune homes, levels the gantry if it can, moves to the middle of the bed and starts the routine; Mainsail or Fluidd shows the Z dialog. Accept, then Save config. Redo it after a nozzle or build plate swap. The first layer test in the wizard fine-tunes it while printing. |
+| 3 | **Filament** | | the Tuning Wizard, then Advanced tuning if you want it, see below |
+| 4 | **Input shaper** | an accelerometer and `[input_shaper]` | Kalico's `SHAPER_CALIBRATE`. Printune shows the pick for each axis and the highest acceleration that keeps corners sharp. The shaper is on right away; **Save to printer.cfg** runs `SAVE_CONFIG` (Kalico restarts). If the shaper changed, re-check pressure advance. With Shake&Tune, its shaper graphs run from the same step and show on the page. |
 
 The belt measurement is new: the pluck detection is tested on a simulated accelerometer and synthetic recordings (fans, frame resonances, loose and over-tight belts, a belt heard mostly at twice its tone), not yet on many real printers. Fans and motors that run all the time are measured in the quiet second and taken off.
 

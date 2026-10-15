@@ -312,7 +312,14 @@ class Printune:
             except Exception:
                 pass
             look = self.printer.lookup_object
+            cmds = getattr(look("gcode"), "ready_gcode_handlers", {})
+            # Z offset routine: a probe (BLTouch, inductive, eddy), a Beacon (it has no
+            # PROBE_CALIBRATE; BEACON_CALIBRATE is its paper test), or the Z endstop
+            zcal = ("probe" if "PROBE_CALIBRATE" in cmds else
+                    "beacon" if "BEACON_CALIBRATE" in cmds else
+                    "endstop" if "Z_ENDSTOP_CALIBRATE" in cmds else "")
             self._tool_info = {
+                "zcal": zcal,
                 "accel": look("resonance_tester", None) is not None,
                 "input_shaper": look("input_shaper", None) is not None,
                 "shaketune": look("shaketune", None) is not None,

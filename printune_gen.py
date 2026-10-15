@@ -1828,23 +1828,13 @@ class Session:
                 labs = [fmt_val(d * 100, 1) for d in self.em_fine]
                 self.em_f = self._place_em(labs, "EM_F", "em_fine", (col_l, by1 - m - hf / 2))
 
-        # retraction towers, cooling blocks and cone, bridge strips, and the max flow tower (printed
-        # last). The tower is placed first, so the others fit around it; if that puts anything
-        # printed before it on a later plate, everything goes in print order instead (a plate
-        # printed earlier must not hold the tower). _fits keeps the gantry off the tower either way.
-        saved = [list(p) for p in self.plates]
-        self._place_mvs(X, Y)
+        # retraction towers, cooling blocks and cone, bridge strips, then the max flow tower,
+        # printed last on a plate of its own: it is far taller than the gantry clearance, so
+        # nothing ever shares a plate with it. _fits still keeps the gantry off tall objects.
         self._place_towers(Y)
         self._place_cool(X, Y)
         self._place_bridge(X, Y)
-        before = (self.towers + self.cool_objs + ([self.cone_obj] if self.cone_obj else [])
-                  + [o for m in BR_MODES for o in self.br_objs[m]])
-        if self.mvs_obj and before and max(o.plate for o in before) > self.mvs_obj.plate:
-            self.plates = saved
-            self._place_towers(Y)
-            self._place_cool(X, Y)
-            self._place_bridge(X, Y)
-            self._place_mvs(X, Y)
+        self._place_mvs(X, Y)
 
         # extra patches: printed right after the first round, so they only need to stay
         # off the other objects of plate 1 (they are low, the clearance rule doesn't apply)
@@ -1934,7 +1924,7 @@ class Session:
                 ob = Obj("MVS", (cx - hb, cy - hb - 7, cx + hb, cy + hb), self.mvs.top, "mvs")
                 ob.c = (cx, cy)
                 return [ob]
-            got = self._place([(build, (X(0.5), Y(0.5)))])
+            got = self._place([(build, (X(0.5), Y(0.5)))], own_plate=True)
             if not got:
                 raise SystemExit("Printune: the max flow tower does not fit on this bed")
             self.mvs_obj = got[0]
@@ -2007,10 +1997,14 @@ class Session:
         ob.labs = [(x0 + tw - label_size(l)[0], y + (BR_D - label_size(l)[1]) / 2) for l, y in zip(labels, ob.strips)]
         return [ob]
 
-    def _place(self, builds, new_plate=True):
+    def _place(self, builds, new_plate=True, own_plate=False):
         """builds: [(build(cx, cy) -> objs, preferred (cx, cy))], tried in order. Place on the
-        current plate if any fits, else on a new, empty plate. Returns the objects or None."""
-        for fresh in ((False, True) if new_plate else (False,)):
+        current plate if any fits, else on a new, empty plate. Returns the objects or None.
+        own_plate: always a plate with nothing else on it (the current one only if empty)."""
+        tries = (False, True) if new_plate else (False,)
+        if own_plate:
+            tries = (False,) if not self.plates[-1] else (True,)
+        for fresh in tries:
             plate = [] if fresh else self.plates[-1]
             for build, pref in builds:
                 for cx, cy in self._candidates(build, pref):

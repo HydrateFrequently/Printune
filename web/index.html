@@ -238,6 +238,8 @@ input[type=text], input[type=number] {
         <a class="test-card off" id="beltOff" href="https://docs.kalico.gg/Measuring_Resonances.html"
            target="_blank" rel="noopener" hidden><b>Belt tension</b>
           <span>Needs an accelerometer on the toolhead. Tap to see how to add one.</span></a>
+        <button type="button" class="test-card" id="zcalBtn" hidden><b>Z offset</b>
+          <span>Sets the starting Z offset with the printer's own paper test. The first layer test fine-tunes it.</span></button>
       </div>
       <h2 class="section">2. A filament</h2>
       <button type="button" class="big" id="wizardBtn">Tuning Wizard
@@ -1161,6 +1163,7 @@ function renderHome() {
   // the belt step is for CoreXY; without an accelerometer the steps link to how to add one
   show("beltBtn", !!tools.accel && !!tools.corexy);
   show("beltOff", !tools.accel && !!tools.corexy);
+  show("zcalBtn", !!tools.zcal);
   show("shaperBtn", !!tools.accel);
   show("shaperOff", !tools.accel);
   show("stOff", !!tools.accel && !tools.shaketune);
@@ -1269,6 +1272,7 @@ function render() {
 function wire() {
   $("wizardBtn").onclick = () => openForm("wizard");
   $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS").catch(() => {});
+  $("zcalBtn").onclick = () => runGcode("_PRINTUNE_ZCAL").catch(() => {});
   $("shaperBtn").onclick = () => runGcode("_PRINTUNE_SHAPER").catch(() => {});
   $("advBtn").onclick = () => openForm("advanced");
   buildCards();
