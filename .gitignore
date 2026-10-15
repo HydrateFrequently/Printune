@@ -5,3 +5,4 @@ __pycache__/
 *.height.npy
 *.paths.npz
 __pycache__/
+test_env/fleet/

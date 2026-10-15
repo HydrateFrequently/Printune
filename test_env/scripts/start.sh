@@ -32,7 +32,12 @@ done
 plug=$cfg/printune_plugin.cfg
 if [ -f /home/pi/host/printune.py ]; then
   ln -sfn /home/pi/host/printune.py /home/pi/kalico/klippy/plugins/printune.py
-  printf '[printune]\nenclosed: True\nchamber_sensor: temperature_sensor chamber\nsoak_min: 5\nsoak_max: 30\n' > $plug
+  # ENCLOSED=0: a printer without an enclosure or chamber sensor (fleet runs)
+  if [ "${ENCLOSED:-1}" = 1 ]; then
+    printf '[printune]\nenclosed: True\nchamber_sensor: temperature_sensor chamber\nsoak_min: 5\nsoak_max: 30\n' > $plug
+  else
+    printf '[printune]\n' > $plug
+  fi
   # Machine setup: SETUP=1 (default) gives the virtual printer a known geometry so scripted
   # runs aren't blocked; SETUP=0 leaves it out, to try the setup step (the page saves it into
   # printer.cfg). Values in this included file win over saved ones, so use SETUP=0 to edit them.
@@ -74,6 +79,18 @@ add_include() {
     END { if (!have) print inc }' $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
 }
 add_include printune_plugin.cfg
+# Bed size for a fleet of test printers (tools/fleet.py): BED_X / BED_Y / BED_Z set the
+# position_max of the X, Y and Z steppers on every start (empty = keep printer.cfg's)
+set_max() {
+  [ -n "$2" ] || return 0
+  awk -v sec="[$1]" -v v="$2" '
+    /^\[/ { cur = $0 }
+    cur == sec && /^position_max:/ { print "position_max: " v; next }
+    { print }' $cfg/printer.cfg > $cfg/.printer.cfg.tmp && mv $cfg/.printer.cfg.tmp $cfg/printer.cfg
+}
+set_max stepper_x "$BED_X"
+set_max stepper_y "$BED_Y"
+set_max stepper_z "$BED_Z"
 # Simulated accelerometer, input shaper and Shake&Tune: ACCEL=0 / SHAKETUNE=0 make
 # a printer without them, to see the steps greyed out. sim_accel.py is linked from
 # the host folder when there, so it can be edited without a rebuild.
@@ -86,7 +103,8 @@ sed -i '/^\[include sim_accel\.cfg\]/d; /^\[include shaketune\.cfg\]/d' $cfg/pri
 rm -f $cfg/sim_accel.cfg $cfg/shaketune.cfg /home/pi/kalico/klippy/extras/fake_accel.py
 if [ "${ACCEL:-1}" = 1 ] && [ -f $fa ]; then
   ln -sfn $fa /home/pi/kalico/klippy/extras/sim_accel.py
-  printf '[sim_accel]\nx_modes: 52.0:0.08, 87:0.12:0.3\ny_modes: 41.0:0.10\nbelt_a: 96\nbelt_b: 91\n\n[resonance_tester]\naccel_chip: sim_accel\nprobe_points: 187.5,194,20\n\n[input_shaper]\n' > $acc
+  printf '[sim_accel]\nx_modes: 52.0:0.08, 87:0.12:0.3\ny_modes: 41.0:0.10\nbelt_a: 96\nbelt_b: 91\n\n[resonance_tester]\naccel_chip: sim_accel\nprobe_points: %s,%s,20\n\n[input_shaper]\n' \
+    "$(awk "BEGIN{print ${BED_X:-375}/2}")" "$(awk "BEGIN{print ${BED_Y:-388}/2}")" > $acc
   if [ "${SHAKETUNE:-1}" = 1 ]; then
     if [ -e $st ]; then
       printf '\n[shaketune]\n' >> $acc
