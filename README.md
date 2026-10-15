@@ -66,7 +66,7 @@ Do these in order: the belts, then each filament (the wizard), then the input sh
 
 The belt measurement is new: the pluck detection is tested on a simulated accelerometer and synthetic recordings (fans, frame resonances, loose and over-tight belts, a belt heard mostly at twice its tone), not yet on many real printers. Fans and motors that run all the time are measured in the quiet second and taken off.
 
-Every belt recording (and its quiet second) is saved in `printune_exports/recordings/` in the config folder, so you can download it from Mainsail's Machine page; the last 40 are kept. To record anything else, run `PRINTUNE_RECORD SECONDS=10 NAME=plucks` (optional `CHIP=adxl345` or `CHIP=beacon`, at most 30 s). Kalico's own `ACCELEROMETER_MEASURE` writes to `/tmp`, which Mainsail can't reach.
+Every belt recording (and its quiet second) is saved in `printune_exports/recordings/` in the config folder, so you can download it from Mainsail's Machine page; the last 40 are kept. To record anything else, run `PRINTUNE_RECORD SECONDS=10 NAME=plucks` (optional `CHIP=` as for Kalico's own commands, e.g. `CHIP=beacon`; at most 30 s; the same `NAME` overwrites the earlier file). Kalico's own `ACCELEROMETER_MEASURE` writes to `/tmp`, which Mainsail can't reach.
 
 ## The tests
 

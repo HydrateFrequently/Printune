@@ -29,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -338,18 +339,12 @@ class Printune:
         try:
             # a second of background first (fans, motors), so they aren't taken for the belt
             self.state, self.message = "listening", "Hands off the printer for a moment"
-            client = chip.start_internal_client()
-            toolhead.dwell(1.5)
-            client.finish_measurements()
-            quiet = client.get_samples()
+            quiet = self._record(chip, toolhead, 1.5)
             self.belt_now = belt
             self.message = "Pluck belt %s %d times, about once a second" % (belt, n)
             if gcmd.get_int("UI", 0):
                 self.gcode.run_script_from_command("_PRINTUNE_BELTS_UI STEP=pluck BELT=%s" % belt)
-            client = chip.start_internal_client()
-            toolhead.dwell(secs)
-            client.finish_measurements()
-            samples = client.get_samples()
+            samples = self._record(chip, toolhead, secs)
         finally:
             self.belt_now = None
             self.state, self.message = "idle", ""
@@ -389,41 +384,61 @@ class Printune:
     # ---------------- raw recordings, readable from Mainsail (Kalico's own go to /tmp) ----------------
     REC_KEEP = 40
 
+    @staticmethod
+    def _record(chip, toolhead, secs):
+        client = chip.start_internal_client()
+        try:
+            toolhead.dwell(secs)
+        finally:
+            client.finish_measurements()     # never leave the chip streaming
+        return client.get_samples()
+
+    def _find_chip(self, name):
+        """A chip by Kalico's CHIP= name (beacon, hotend for [adxl345 hotend]) or its section name."""
+        rt = self.printer.lookup_object("resonance_tester", None)
+        chips = getattr(rt, "accel_chips", None) or []
+        if not name:
+            return chips[0][1] if chips else None
+        cands = [name] + ["%s %s" % (k, name) for k in
+                          ("adxl345", "lis2dw", "lis3dh", "mpu9250", "icm20948", "bmi160")]
+        for c in cands:
+            obj = self.printer.lookup_object(c, None)
+            if obj is not None and hasattr(obj, "start_internal_client"):
+                return obj
+        return None
+
     def _save_recording(self, name, samples):
         """Write samples as ACCELEROMETER_MEASURE's CSV into printune_exports/recordings."""
         if not samples:
             return None
         d = os.path.join(self.out_dir, "recordings")
-        try:
-            os.makedirs(d, exist_ok=True)
-            path = os.path.join(d, name + ".csv")
-            with open(path, "w") as f:
-                f.write("#time,accel_x,accel_y,accel_z\n")
-                f.writelines("%.6f,%.6f,%.6f,%.6f\n" % tuple(s[:4]) for s in samples)
-            old = sorted((os.path.getmtime(os.path.join(d, n)), n)
-                         for n in os.listdir(d) if n.endswith(".csv"))
-            for _, n in old[:-self.REC_KEEP]:
-                os.remove(os.path.join(d, n))
-            return path
-        except OSError as e:
-            logging.warning("printune: could not save recording %s: %s", name, e)
-            return None
+        path = os.path.join(d, name + ".csv")
+        keep = self.REC_KEEP
+
+        def write():
+            # in a thread like Kalico's own writer: a 30 s recording takes a while on a Pi
+            try:
+                os.makedirs(d, exist_ok=True)
+                with open(path + ".part", "w") as f:
+                    f.write("#time,accel_x,accel_y,accel_z\n")
+                    f.writelines("%.6f,%.6f,%.6f,%.6f\n" % tuple(s[:4]) for s in samples)
+                os.replace(path + ".part", path)
+                old = sorted((os.path.getmtime(os.path.join(d, n)), n)
+                             for n in os.listdir(d) if n.endswith(".csv"))
+                for _, n in old[:-keep]:
+                    os.remove(os.path.join(d, n))
+            except OSError as e:
+                logging.warning("printune: could not save recording %s: %s", name, e)
+        threading.Thread(target=write, daemon=True).start()
+        return path
 
     cmd_PRINTUNE_RECORD_help = ("Printune: record an accelerometer for SECONDS and save it where "
                                 "Mainsail can download it (CHIP=, SECONDS=, NAME=)")
 
     def cmd_PRINTUNE_RECORD(self, gcmd):
         name = gcmd.get("CHIP", "")
-        if name:
-            try:
-                chip = self.printer.lookup_object(name)
-            except Exception:
-                chip = None
-        else:
-            rt = self.printer.lookup_object("resonance_tester", None)
-            chips = getattr(rt, "accel_chips", None) or []
-            chip = chips[0][1] if chips else None
-        if chip is None or not hasattr(chip, "start_internal_client"):
+        chip = self._find_chip(name)
+        if chip is None:
             raise gcmd.error("Printune: no accelerometer %s" % (name or "found"))
         secs = gcmd.get_float("SECONDS", 10., minval=.5, maxval=30.)
         label = re.sub(r"[^A-Za-z0-9_-]", "_", gcmd.get("NAME", "")) or time.strftime("%Y%m%d-%H%M%S")
@@ -431,16 +446,11 @@ class Printune:
         toolhead = self.printer.lookup_object("toolhead")
         toolhead.wait_moves()
         gcmd.respond_info("Printune: recording %.0f s, go" % secs)
-        client = chip.start_internal_client()
-        toolhead.dwell(secs)
-        client.finish_measurements()
-        samples = client.get_samples()
+        samples = self._record(chip, toolhead, secs)
         if not samples:
             raise gcmd.error("Printune: the accelerometer sent no data")
         path = self._save_recording(label, samples)
-        if not path:
-            raise gcmd.error("Printune: could not save the recording")
-        gcmd.respond_info("Printune: saved %d samples to %s" % (
+        gcmd.respond_info("Printune: saving %d samples to %s" % (
             len(samples), os.path.relpath(path, self.cfg_dir)))
 
     # ---------------- input shaper (Kalico's SHAPER_CALIBRATE) ----------------
