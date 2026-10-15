@@ -54,25 +54,57 @@ def main():
                 rows.append([before[i] - m0, int(m.group(1)), m.group(2), m.group(3)])
         for j, r in enumerate(rows):
             r.append(rows[j + 1][0] if j + 1 < len(rows) else m1 - m0)
-        print("cone: %d layers; markers (layer time as Kalico plans it, and length / speed):" % len(rows))
+        print("cone: %d layers. A marker on layer k shows the time of layer k-1, the layer it is laid on"
+              % len(rows))
+        print("(target, as Kalico plans it, and as length / speed):")
         print("  marker  layer   target    Kalico   len/speed")
         worst = 0.0
-        for i0, k, tgt, mk, i1 in rows:
-            tk = sum(t[i0:i1])
-            naive = sum(math.dist(p[:3], q[:3]) / v for p, q, v, _ in mv[m0 + i0:m0 + i1])
-            if mk:
-                worst = max(worst, abs(tk - float(tgt)))
-                print("  %4s s  %5d  %6.2f s  %6.2f s  %6.2f s" % (mk, k, float(tgt), tk, naive))
+        for j, (i0, k, tgt, mk, i1) in enumerate(rows):
+            if mk and j:
+                p0, _, ptg, _, p1 = rows[j - 1]
+                tk = sum(t[p0:p1])
+                naive = sum(math.dist(p[:3], q[:3]) / v for p, q, v, _ in mv[m0 + p0:m0 + p1])
+                worst = max(worst, abs(tk - float(mk)))
+                print("  %4s s  %5d  %6.2f s  %6.2f s  %6.2f s" % (mk, k, float(ptg), tk, naive))
         print("  top layer %d: %.2f s; worst marker off its target: %.2f s" % (
             rows[-1][1], sum(t[rows[-1][0]:rows[-1][4]]), worst))
+        # the edge: when the nozzle passes the marker angle on each layer's outer turn
+        hdr = next((ln for ln in lines[l0:l1] if ln.startswith("; cooling cone: centre")), None)
+        if hdr:
+            cx, cy = (float(v) for v in hdr.split("centre ")[1].split(",")[0].split())
+            deg = float(re.search(r"at ([\d.]+) deg", hdr).group(1))
+            cum = [0.0]
+            for dt in t:
+                cum.append(cum[-1] + dt)
+            passes = {}
+            for i0, k, tgt, mk, i1 in rows:
+                for j in range(i0, i1):
+                    p, q = mv[m0 + j][0], mv[m0 + j][1]
+                    if q[3] <= 0:
+                        continue
+                    a0 = (math.degrees(math.atan2(p[1] - cy, p[0] - cx)) - deg + 180) % 360 - 180
+                    a1 = (math.degrees(math.atan2(q[1] - cy, q[0] - cx)) - deg + 180) % 360 - 180
+                    if a0 < 0 <= a1 and a1 - a0 < 90:
+                        passes[k] = cum[j] + t[j] * (-a0) / (a1 - a0)
+                        break
+            print("edge: time between passes at %g deg (where the markers are), marker layers:" % deg)
+            print("  marker  layer   between passes")
+            worst = 0.0
+            for i0, k, tgt, mk, i1 in rows:
+                if mk and k in passes and k - 1 in passes:
+                    # layer k is laid on layer k-1's edge this long after that edge was printed
+                    d = passes[k] - passes[k - 1]
+                    worst = max(worst, abs(d - float(mk)))
+                    print("  %4s s  %5d  %6.2f s" % (mk, k, d))
+            print("  worst: %.2f s off" % worst)
     for name in sorted(n for n in spans if re.match(r"COOL_\d+$", n)):
         m0, m1, l0, l1 = spans[name]
         t = gen.kalico_plan(mv[m0:m1], **plan)
         st = [before[i] - m0 for i in range(l0, l1) if lines[i].startswith("; block layer")] + [m1 - m0]
         lt = [sum(t[st[j]:st[j + 1]]) for j in range(len(st) - 1)]
         fan = next((l for l in lines[l0:l1] if l.startswith("; cooling block")), "")
-        ramp = lt[gen.BASE_LAYERS:]
-        print("%s: %d layers, block layers %.1f-%.1f s  (%s)" % (
+        ramp = lt[gen.BASE_LAYERS:-1]       # the top layer has nothing printed on it
+        print("%s: %d layers, block layers below the top %.1f-%.1f s  (%s)" % (
             name, len(lt), min(ramp), max(ramp), fan[2:].split(",")[0]))
 
 

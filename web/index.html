@@ -88,6 +88,7 @@ a.test-card { text-decoration: none; }
 #pGraphs img { display: block; width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); background: #fff; margin: 8px 0; }
 .test-card.off b { color: var(--muted); }
 .test-card span { color: var(--muted); font-size: 15px; }
+.test-card.adv { width: 100%; margin-bottom: 10px; }
 details.card > summary {
   cursor: pointer; font-size: 19px; font-weight: 600; min-height: 48px; display: flex; align-items: center;
   list-style: none;
@@ -234,22 +235,13 @@ input[type=text], input[type=number] {
       </div>
       <h2 class="section">2. A filament</h2>
       <button type="button" class="big" id="wizardBtn">Tuning Wizard
-        <small>Runs every test, one after the other, and guides you through each pick</small></button>
+        <small>First layer, pressure advance, flow and retraction, one after the other, with a pick after each test</small></button>
       <h2 class="section">Or run one test</h2>
-      <div class="grid2">
-        <button type="button" class="test-card" data-test="squish"><b>First layer (squish)</b>
-          <span>Prints patches so you can dial in the nozzle height.</span></button>
-        <button type="button" class="test-card" data-test="pa"><b>Pressure advance</b>
-          <span>Even walls without bulges or gaps where the speed changes.</span></button>
-        <button type="button" class="test-card" data-test="em"><b>Flow (extrusion multiplier)</b>
-          <span>Smooth top surfaces: not too much, not too little plastic.</span></button>
-        <button type="button" class="test-card" data-test="ret"><b>Retraction &amp; temperature</b>
-          <span>Towers that show which settings string the least.</span></button>
-        <button type="button" class="test-card" data-test="cool"><b>Cooling</b>
-          <span>Overhang blocks pick one steady fan %; a cone shows the shortest layer time.</span></button>
-        <button type="button" class="test-card" data-test="mvs"><b>Max volumetric flow</b>
-          <span>A thin tower printed faster and faster: how much plastic the hotend can melt.</span></button>
-      </div>
+      <div class="grid2" id="wizCards"></div>
+      <h2 class="section">Advanced tuning</h2>
+      <button type="button" class="test-card adv" id="advBtn"><b>Advanced tuning</b>
+        <span id="advSub">For a filament the wizard has tuned. The results go into the same preset.</span></button>
+      <div class="grid2" id="advCards"></div>
       <h2 class="section">3. When the filament is tuned</h2>
       <div class="grid2">
         <button type="button" class="test-card" id="shaperBtn"><b>Input shaper</b>
@@ -307,7 +299,7 @@ input[type=text], input[type=number] {
       <div class="field">
         <label for="nameIn"><span class="stepnum">2</span>Name</label>
         <input type="text" id="nameIn" maxlength="40" autocomplete="off" autocapitalize="words" spellcheck="false">
-        <p class="help">This becomes the name of the filament preset in Orca.</p>
+        <p class="help" id="nameHelp">This becomes the name of the filament preset in Orca.</p>
       </div>
       <div class="field">
         <label for="brandIn"><span class="stepnum">3</span>Brand <span class="muted">(optional)</span></label>
@@ -403,13 +395,20 @@ const FALLBACK_FILAMENTS = {
   PA: { tmin: 250, tmax: 280, bed: 90, soak: true },
   TPU: { tmin: 210, tmax: 240, bed: 50, soak: false },
 };
+// every test in print order; which procedure each belongs to comes from the plugin (procs)
 const TESTS = [
-  { key: "squish", label: "First layer (squish)", stage: "First layer" },
-  { key: "pa", label: "Pressure advance", stage: "Pressure advance" },
-  { key: "em", label: "Flow (extrusion multiplier)", stage: "Flow" },
-  { key: "ret", label: "Retraction & temperature", stage: "Retraction" },
-  { key: "cool", label: "Cooling (fan & layer time)", stage: "Cooling" },
-  { key: "mvs", label: "Max volumetric flow", stage: "Max flow" },
+  { key: "squish", label: "First layer (squish)", stage: "First layer",
+    desc: "Prints patches so you can dial in the nozzle height." },
+  { key: "pa", label: "Pressure advance", stage: "Pressure advance",
+    desc: "Even walls without bulges or gaps where the speed changes." },
+  { key: "em", label: "Flow (extrusion multiplier)", stage: "Flow",
+    desc: "Smooth top surfaces: not too much, not too little plastic." },
+  { key: "ret", label: "Retraction & temperature", stage: "Retraction",
+    desc: "Towers that show which settings string the least." },
+  { key: "mvs", label: "Max volumetric flow", stage: "Max flow",
+    desc: "A thin tower printed faster and faster: how much plastic the hotend can melt." },
+  { key: "cool", label: "Cooling (fan & layer time)", stage: "Cooling",
+    desc: "Overhang blocks pick one steady fan %; a cone shows the shortest layer time." },
 ];
 const SUBSCRIBE = {
   print_stats: null, display_status: null, virtual_sdcard: null, pause_resume: null, idle_timeout: null,
@@ -794,7 +793,7 @@ function renderPrompt() {
   renderResultsExtras();
   renderGraphs();
   // max flow band list: also take a typed height or band number
-  show("pMvs", !!prompt && /^Printune 6\/6 - Max flow$/.test(prompt.title || ""));
+  show("pMvs", !!prompt && /^(?:Printune|Advanced)[ \d\/]* - Max flow$/.test(prompt.title || ""));
 }
 
 // Shake&Tune graphs made by the last run, under its prompt
@@ -864,7 +863,34 @@ function makeStepper(name, opts) {
 }
 
 // ---------- form ----------
-const form = { mode: "wizard", type: "PLA", soak: false, tests: new Set(TESTS.map((t) => t.key)) };
+const DEFAULT_PROCS = { wizard: ["squish", "pa", "em", "ret"], advanced: ["mvs", "cool"] };
+function procs() {
+  const p = pt().procs;
+  return p && Array.isArray(p.wizard) && Array.isArray(p.advanced) ? p : DEFAULT_PROCS;
+}
+function procOf(key) { return procs().advanced.includes(key) ? "advanced" : "wizard"; }
+const PROC_TITLE = { wizard: "Tuning Wizard", advanced: "Advanced tuning" };
+
+let cardsFor = "";
+function buildCards() {
+  const p = procs();
+  const sig = JSON.stringify(p);
+  if (sig === cardsFor) return;
+  cardsFor = sig;
+  for (const [host, list] of [[$("wizCards"), p.wizard], [$("advCards"), p.advanced]]) {
+    host.textContent = "";
+    for (const k of list) {
+      const t = TESTS.find((x) => x.key === k);
+      if (!t) continue;
+      const b = el("button", { type: "button", class: "test-card", "data-test": k });
+      b.append(el("b", null, t.label), el("span", null, t.desc));
+      b.onclick = () => openForm(k);
+      host.appendChild(b);
+    }
+  }
+}
+
+const form = { mode: "wizard", proc: "wizard", type: "PLA", soak: false, tests: new Set(DEFAULT_PROCS.wizard) };
 
 function defaultsFor(type) {
   const f = filaments()[type] || FALLBACK_FILAMENTS[type] || FALLBACK_FILAMENTS.PLA;
@@ -896,8 +922,13 @@ function saveForm() {
 
 function openForm(mode) {
   form.mode = mode;
-  form.tests = new Set(mode === "wizard" ? TESTS.map((t) => t.key) : [mode]);
-  $("formTitle").textContent = mode === "wizard" ? "Tuning Wizard" : (TESTS.find((t) => t.key === mode) || {}).label;
+  const p = procs();
+  form.proc = p[mode] ? mode : procOf(mode);
+  form.tests = new Set(p[mode] ? p[mode] : [mode]);
+  $("formTitle").textContent = PROC_TITLE[mode] || (TESTS.find((t) => t.key === mode) || {}).label;
+  $("nameHelp").textContent = form.proc === "advanced"
+    ? "Use the name you gave it in the Tuning Wizard: the results are added to that preset, and the tests print at the nozzle temperature picked there."
+    : "This becomes the name of the filament preset in Orca.";
   $("formErr").hidden = true;
   buildChips();
   const last = store("printune.lastType");
@@ -938,7 +969,11 @@ function renderForm() {
   show("soakField", enclosed);
   $("testsNum").textContent = enclosed ? "7" : "6";
   $("soakTg").setAttribute("aria-checked", String(form.soak));
-  for (const b of $("testToggles").children) b.setAttribute("aria-checked", String(form.tests.has(b.dataset.key)));
+  const inProc = procs()[form.proc] || [];
+  for (const b of $("testToggles").children) {
+    b.setAttribute("aria-checked", String(form.tests.has(b.dataset.key)));
+    b.hidden = !inProc.includes(b.dataset.key);
+  }
   $("startBtn").disabled = !form.tests.size;
 }
 
@@ -951,7 +986,7 @@ function buildStartCommand() {
   let cmd = "_PRINTUNE_START TYPE=" + type + ' NAME="' + name + '"';
   if (brand) cmd += ' VENDOR="' + brand + '"';
   cmd += " TMIN=" + steppers.tmin.value + " TMAX=" + steppers.tmax.value + " BED=" + steppers.bed.value +
-    " SOAK=" + soak + " TESTS=" + tests;
+    " SOAK=" + soak + " PROC=" + form.proc + " TESTS=" + tests;
   return cmd.replace(/[;#\r\n]/g, "");
 }
 
@@ -993,18 +1028,27 @@ function currentStage() {
   if (isResultsPrompt() || (printState() === "complete" && !starting && pt().state !== "generating")) return "results";
   const msg = (obj("display_status").message || "").trim();
   if (/^Printune soak/i.test(msg)) return "soak";
-  const m = /^Printune (\d)\/\d/i.exec(msg);
-  if (m) return TESTS[Number(m[1]) - 1] ? TESTS[Number(m[1]) - 1].key : "";
+  // titles are "Printune 2/4 ..." (wizard) or "Advanced 1/2 ..." (advanced tuning): step n of the session
+  const st = sessionTests();
+  const m = /^(?:Printune|Advanced) (\d+)\/\d+/i.exec(msg);
+  if (m) return st[Number(m[1]) - 1] || "";
   if (prompt) {
-    const pm = /^Printune (\d)\/\d/i.exec(prompt.title);
-    if (pm && TESTS[Number(pm[1]) - 1]) return TESTS[Number(pm[1]) - 1].key;
+    const pm = /^(?:Printune|Advanced) (\d+)\/\d+/i.exec(prompt.title);
+    if (pm && st[Number(pm[1]) - 1]) return st[Number(pm[1]) - 1];
   }
+  if (st.length === 1) return st[0];
   return "";
+}
+
+function sessionTests() {
+  const ses = pt().session || {};
+  const tests = Array.isArray(ses.tests) && ses.tests.length ? ses.tests : procs().wizard;
+  return TESTS.map((t) => t.key).filter((k) => tests.includes(k));
 }
 
 function stageList() {
   const ses = pt().session || {};
-  const tests = Array.isArray(ses.tests) && ses.tests.length ? ses.tests : TESTS.map((t) => t.key);
+  const tests = sessionTests();
   const list = [];
   const soak = pt().soak || {};
   if (ses.soak || soak.active || pt().state === "soaking" || store("printune.soakOn") || /^Printune soak/i.test(obj("display_status").message || "")) {
@@ -1085,6 +1129,7 @@ function renderRunning() {
 
 // ---------- home ----------
 function renderHome() {
+  buildCards();
   const busy = isPrinting() && !isOurFile();
   show("busyCard", busy);
   if (busy) $("busyText").textContent = "The printer is busy printing " + printFile() + ".";
@@ -1194,7 +1239,8 @@ function wire() {
   $("wizardBtn").onclick = () => openForm("wizard");
   $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS").catch(() => {});
   $("shaperBtn").onclick = () => runGcode("_PRINTUNE_SHAPER").catch(() => {});
-  for (const b of document.querySelectorAll("[data-test]")) b.onclick = () => openForm(b.dataset.test);
+  $("advBtn").onclick = () => openForm("advanced");
+  buildCards();
   $("backBtn").onclick = () => { saveForm(); view = "home"; render(); };
   $("startBtn").onclick = startSession;
   $("soakTg").onclick = () => { form.soak = !form.soak; renderForm(); };

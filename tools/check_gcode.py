@@ -4,6 +4,8 @@
 Simulates the moves (G90 XY/Z, M83 E) and reports:
   * moves outside the bed, extrusion widths per object family
   * nozzle crashes: a travel passing through something already printed
+  * extrusions laid onto another object (an uncleared plate)
+  --skip=cool,cone,mvs simulates pressing "Skip" at those plate pauses
   * toolhead clearance: the tallest printed thing (above the nozzle tip) within
     radius r of the nozzle, for every move, binned by r
   * filament and a rough time estimate
@@ -19,11 +21,14 @@ import numpy as np
 RES = 0.25  # heightmap resolution, mm
 
 
-def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388)):
+def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388), skip=()):
+    """skip: WHAT labels (cool, cone, mvs) whose "Skip" button is pressed at the plate pause,
+    simulating the macros: those objects are excluded and the plate stays uncleared."""
     fa = math.pi * (fil_d / 2) ** 2
     x = y = z = 0.0
     obj = None
     plate = 1
+    excl = set()
     segs = []      # x0,y0,x1,y1,z,w,e,kind(obj), is_travel
     out_of_bed = []
     rx = re.compile(r"([XYZEF])(-?[\d.]+)")
@@ -33,10 +38,19 @@ def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388)):
             continue
         if t.startswith("_PRINTUNE_CP STEP=plate"):
             n = int(re.search(r"N=(\d+)", t).group(1))
-            if n > plate:
-                # the plate is cleared here (later checkpoints for the same plate don't pause)
-                plate = n
-                segs.append((x, y, x, y, z, 0.0, 0.0, "PLATE", 2))
+            names = set(re.search(r"ALL=(\S+)", t).group(1).split(","))
+            what = re.search(r"WHAT=(\w+)", t)
+            if n > plate and not names <= excl:
+                # the macro pauses here (later checkpoints for a cleared plate don't)
+                if what and what.group(1) in skip:
+                    # "Skip": objects excluded, plate not cleared
+                    excl |= set(re.search(r"SKIP=(\S+)", t).group(1).split(","))
+                else:
+                    plate = n
+                    segs.append((x, y, x, y, z, 0.0, 0.0, "PLATE", 2))
+            continue
+        if t.startswith("EXCLUDE_OBJECT NAME="):
+            excl.add(t.split("NAME=")[1].strip())
             continue
         if t.startswith("EXCLUDE_OBJECT_START"):
             obj = t.split("NAME=")[1]
@@ -45,6 +59,8 @@ def parse(path, h1=0.25, h=0.2, fil_d=1.75, bed=(0, 0, 375, 388)):
             obj = None
             continue
         if not (t.startswith("G1 ") or t.startswith("G0 ")):
+            continue
+        if obj in excl:
             continue
         d = dict((k, float(v)) for k, v in rx.findall(t))
         nx, ny, nz = d.get("X", x), d.get("Y", y), d.get("Z", z)
@@ -68,8 +84,10 @@ def family(name):
     return re.sub(r"\d+$", "", name).rstrip("_")
 
 
-def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
-    segs, oob = parse(path, h1, h, bed=bed)
+def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=()):
+    segs, oob = parse(path, h1, h, bed=bed, skip=skip)
+    if skip:
+        print("simulated: Skip pressed at the plate pause for %s" % ",".join(skip))
     print("plates: %d" % (1 + sum(1 for s in segs if s[8] == 2)))
     print("segments: %d, outside bed: %d" % (len(segs), len(oob)))
     for t in oob[:5]:
@@ -85,6 +103,9 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
 
     nx, ny = int(400 / RES), int(400 / RES)
     H = np.zeros((nx, ny), np.float32)
+    O = np.zeros((nx, ny), np.int32)    # which object printed the top of each cell
+    oid = {}
+    onto = []   # extrusions laid onto another object's material
     crash = []
     rbins = [3, 6, 10, 15, 20, 30, 45, 65]
     worst = {r: (-99.0, None) for r in rbins}
@@ -99,6 +120,7 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
     for n, (x0, y0, x1, y1, z, w, e, ob, trav) in enumerate(segs):
         if trav == 2:
             H[:] = 0.0      # plate cleared
+            O[:] = 0
             continue
         L = math.hypot(x1 - x0, y1 - y0)
         steps = max(1, int(L / 2.0))
@@ -125,6 +147,16 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
                     crash.append((round(px, 1), round(py, 1), z, float(hh), ob))
                     break
             continue
+        # extruding onto another object (e.g. an uncleared plate)
+        me = oid.setdefault(ob, len(oid) + 1)
+        for k in range(steps + 1):
+            px = x0 + (x1 - x0) * k / steps
+            py = y0 + (y1 - y0) * k / steps
+            ci, cj = int(px / RES), int(py / RES)
+            if H[ci, cj] > z - 0.05 and O[ci, cj] != me:
+                inv = {v: kk for kk, v in oid.items()}
+                onto.append((round(px, 1), round(py, 1), z, ob, inv.get(int(O[ci, cj]))))
+                break
         # rasterise extrusion
         hw = w / 2
         xa, xb = min(x0, x1) - hw, max(x0, x1) + hw
@@ -139,6 +171,10 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
         m = dd <= hw
         sub = H[ia:ib, ja:jb]
         sub[m] = np.maximum(sub[m], z)
+        O[ia:ib, ja:jb][m] = me
+    print("extrusions onto another object: %d" % len(onto))
+    for c in onto[:10]:
+        print("  ", c)
     print("nozzle crashes on travels: %d" % len(crash))
     for c in crash[:10]:
         print("  ", c)
@@ -156,6 +192,9 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388)):
 
 
 if __name__ == "__main__":
-    # check_gcode.py FILE [R] [W,D]
-    bed = (0, 0) + tuple(float(v) for v in sys.argv[3].split(",")) if len(sys.argv) > 3 else (0, 0, 375, 388)
-    main(sys.argv[1], float(sys.argv[2]) if len(sys.argv) > 2 else 45.0, bed=bed)
+    # check_gcode.py FILE [R] [W,D] [--skip cool,cone,mvs]
+    args = [a for a in sys.argv[1:] if not a.startswith("--skip")]
+    sk = [a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--skip=")]
+    skip = tuple(sk[0].split(",")) if sk else ()
+    bed = (0, 0) + tuple(float(v) for v in args[2].split(",")) if len(args) > 2 else (0, 0, 375, 388)
+    main(args[0], float(args[1]) if len(args) > 1 else 45.0, bed=bed, skip=skip)

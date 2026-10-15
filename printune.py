@@ -190,8 +190,10 @@ def cstr(v):
 
 # what the user may type for a name: also safe in G-code parameters and file names
 NAME_RE = re.compile(r"[^A-Za-z0-9 ._()+-]")
-TESTS = ("squish", "pa", "em", "ret", "cool", "mvs")
-SKIP_KEY = {"squish": "patches", "pa": "pa", "em": "em", "ret": "ret", "cool": "cool", "mvs": "mvs"}
+# every test in print order, and the two procedures (Tuning Wizard, Advanced tuning)
+TESTS = gen.ORDER
+SKIP_KEY = gen.SKIP_KEY
+PROCS = gen.PROCS
 DEFAULT_START = ("PRINT_START BED={bed} BED_TEMP={bed} HOTEND={nozzle} "
                  "EXTRUDER={nozzle} EXTRUDER_TEMP={nozzle}")
 
@@ -273,6 +275,7 @@ class Printune:
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
                 "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
                 "shaper": self.shaper, "graphs": self.graphs,
+                "procs": {k: list(v) for k, v in PROCS.items()},
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
                                   "soak": f["soak"]} for k, f in gen.FILAMENTS.items()}}
 
@@ -626,11 +629,17 @@ class Printune:
         soak = gcmd.get_int("SOAK", fil["soak"] if self.enclosed else 0, minval=0, maxval=1)
         if soak and self._sensor_temp(now) is None:
             self._fail(gcmd, "chamber_sensor '%s' not found" % (self._sensor_name(),))
-        tests = [t.strip().lower() for t in gcmd.get("TESTS", ",".join(TESTS)).split(",")
+        # PROC=wizard (default) or advanced picks the tests; TESTS= picks them one by one
+        proc = gcmd.get("PROC", "wizard").lower()
+        if proc not in PROCS:
+            self._fail(gcmd, "PROC must be one of %s" % (", ".join(PROCS),))
+        tests = [t.strip().lower() for t in gcmd.get("TESTS", ",".join(PROCS[proc])).split(",")
                  if t.strip()]
         bad = [t for t in tests if t not in TESTS]
         if bad or not tests:
             self._fail(gcmd, "TESTS is a list of %s" % (",".join(TESTS),))
+        tests = [t for t in TESTS if t in tests]           # print order
+        proc = "advanced" if all(t in PROCS["advanced"] for t in tests) else "wizard"
         ex = self.printer.lookup_object("toolhead").get_extruder().get_name()
         settings = self.printer.lookup_object("configfile").get_status(now)["settings"]
         exc = settings.get(ex, {})
@@ -639,7 +648,14 @@ class Printune:
             self._fail(gcmd, "%d C is too close to the hotend's max_temp (%.0f)"
                        % (tmax, heater.max_temp))
         cfg, opts, mid = self._settings(ftype, tmin, tmax, exc, settings)
+        opts["proc"] = proc
         opts["skip"] = ",".join(SKIP_KEY[t] for t in TESTS if t not in tests)
+        if proc == "advanced":
+            # advanced tuning prints at the temperature the wizard picked for this preset
+            t = self._exported_temp(name)
+            if t and tmin - 30 <= t <= tmax + 30 and t <= heater.max_temp - 5:
+                mid = t
+                cfg["nozzle_temperature"] = cfg["nozzle_temperature_initial_layer"] = str(t)
         start = []
         if soak:
             start.append("_PRINTUNE_SOAK BED=%d NOZZLE=%d" % (bed, mid))
@@ -679,12 +695,16 @@ class Printune:
                                          preexec_fn=lambda: os.nice(10))
         finally:
             log.close()
-        self.session = {"name": name, "type": ftype, "tests": tests, "soak": bool(soak),
+        self.session = {"name": name, "type": ftype, "tests": tests, "proc": proc, "soak": bool(soak),
                         "file": "printune/" + fname, "tmin": tmin, "tmax": tmax, "bed": bed}
         self.pending = (path, block)
         self.state, self.message = "generating", "Preparing the test prints"
-        gcmd.respond_info("Printune: preparing \"%s\" (%s, %d-%d C, bed %d C)..."
-                          % (name, ftype, tmin, tmax, bed))
+        if proc == "advanced":
+            gcmd.respond_info("Printune: preparing advanced tuning for \"%s\" (%s, nozzle %d C, bed %d C)..."
+                              % (name, ftype, mid, bed))
+        else:
+            gcmd.respond_info("Printune: preparing \"%s\" (%s, %d-%d C, bed %d C)..."
+                              % (name, ftype, tmin, tmax, bed))
         if self.gen_timer is None:
             self.gen_timer = self.reactor.register_timer(self._gen_poll)
         self.reactor.update_timer(self.gen_timer, now + .5)
@@ -746,6 +766,16 @@ class Printune:
         if self.toolhead_radius:
             opts["clearance"] = "%g" % (self.toolhead_radius,)
         return cfg, opts, mid
+
+    def _exported_temp(self, name):
+        """Nozzle temperature of an earlier export of this preset (the tower pick), else None."""
+        fname = re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json"
+        try:
+            with open(os.path.join(self.out_dir, fname)) as f:
+                v = json.load(f).get("nozzle_temperature", [None])
+            return int(float(v[0] if isinstance(v, list) else v))
+        except (OSError, ValueError, TypeError, IndexError, AttributeError):
+            return None
 
     def _gen_poll(self, eventtime):
         if self.proc is None:
@@ -954,11 +984,12 @@ class Printune:
         for k in FILAMENT_KEYS:
             if k in cfg:
                 preset[k] = [parse_value(k, cfg[k])[0]]
-        changed = []
+        changed, keys = [], set()
 
         def put(key, value, label):
             old = preset.get(key, [""])[0]
             preset[key] = [value]
+            keys.add(key)
             changed.append("%s %s -> %s" % (label, old or "-", value))
 
         if "em" in tested:
@@ -997,18 +1028,37 @@ class Printune:
                     "SET_RETRACTION RETRACT_LENGTH=%s RETRACT_SPEED=%s "
                     "UNRETRACT_EXTRA_LENGTH=0 UNRETRACT_SPEED=%s" % (ln, sp, sp))
                 preset["filament_start_gcode"] = ["\n".join(lines)]
+                keys.add("filament_start_gcode")
                 changed.append("filament start G-code: SET_RETRACTION line")
         if not changed:
             raise gcmd.error("_PRINTUNE_EXPORT: nothing was picked in this session")
+        fname = re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json"
+        out = os.path.join(self.out_dir, fname)
+        # An earlier export of this preset (the Tuning Wizard before Advanced tuning, or the other
+        # way round): keep its results and add this session's on top
+        merged = False
+        try:
+            with open(out) as f:
+                old = json.load(f)
+            if (isinstance(old, dict) and old.get("type") == "filament" and old.get("name") == name
+                    and "Printune" in str(old.get("filament_notes", ""))):
+                for k in keys:
+                    old[k] = preset[k]
+                preset, merged = old, True
+        except (OSError, ValueError):
+            pass
         preset["filament_settings_id"] = [name]
         m = re.search(r"OrcaSlicer (\d+)\.(\d+)\.(\d+)", head)
         preset["version"] = "%s.%s.%s.0" % m.groups() if m else "2.0.0.0"
-        preset["filament_notes"] = [
-            ((preset.get("filament_notes", [""])[0] + "\n").lstrip()
-             + "Printune %s (from %s): %s" % (time.strftime("%Y-%m-%d"), fid, "; ".join(changed)))]
+        # one note line per session (a session exports again at each savepoint: replace its line)
+        sid = "#%d" % int(os.path.getmtime(path))
+        notes = [l for l in str(preset.get("filament_notes", [""])[0]).split("\n")
+                 if not l.rstrip().endswith(sid)]
+        while notes and not notes[-1].strip():
+            notes.pop()
+        notes.append("Printune %s (from %s): %s %s" % (time.strftime("%Y-%m-%d"), fid, "; ".join(changed), sid))
+        preset["filament_notes"] = ["\n".join(notes)]
         os.makedirs(self.out_dir, exist_ok=True)
-        fname = re.sub(r"[^A-Za-z0-9 ._()@+-]", "_", name).strip() + ".json"
-        out = os.path.join(self.out_dir, fname)
         with open(out + ".tmp", "w") as f:
             json.dump(preset, f, indent=4)
         os.replace(out + ".tmp", out)
@@ -1017,10 +1067,11 @@ class Printune:
         self.last_rel = out if rel.startswith("..") else rel
         logging.info("_PRINTUNE_EXPORT wrote %s (%s)", out, "; ".join(changed))
         gcmd.respond_info(
-            "Printune: Orca filament preset \"%s\" written to %s\n%s\n"
+            "Printune: Orca filament preset \"%s\" written to %s\n%s\n%s"
             "Download it (Mainsail: Machine tab) and import it in Orca: "
             "File > Import > Import Configs.%s"
             % (name, self.last_rel, "\n".join(changed),
+               "Added to the results of the earlier session for this preset.\n" if merged else "",
                " It replaces a preset of the same name." if name == fid else ""))
 
 
