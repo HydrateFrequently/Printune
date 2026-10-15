@@ -1,13 +1,13 @@
 # Printune
 
-Tune your filament and printer by pressing buttons, not by reading guides. Printune is a plugin for Kalico printers (Moonraker plus Mainsail or Fluidd). It prints the tuning tests on the printer, you pick the best result on your phone, and the values end up in an **OrcaSlicer filament preset**.
+Printune is a plugin for Kalico printers (Moonraker plus Mainsail or Fluidd). It prints the tuning tests on the printer, you pick the best result on your phone, and the values are used to generate a **OrcaSlicer filament preset**. Printune helps with repeatability and consistency, it runs the tests in the same order every time and it doesn't forget about a test.
 
 > **Very early development. Not yet tested on a real printer.**
 > Printune was written entirely by AI ("vibecoded"), with a person steering and checking the results. It has not run on a physical printer yet. Try it only if you are comfortable watching the printer the whole time, with a hand near the power switch.
 
 ## What it does
 
-- **Tuning Wizard:** one button runs first layer, pressure advance, flow, retraction and temperature for a filament.
+- **Tuning Wizard:** Runs first layer, pressure advance, flow, retraction and temperature for a filament.
 - **Advanced tuning:** cooling, bridging and max volumetric flow.
 - **Printer tuning:** belt tension by plucking, read by the toolhead accelerometer. After that, the input shaper (Kalico's own, plus Shake&Tune graphs if installed).
 - **Results go into the slicer, not the firmware,** so swapping filament never leaves a stale value behind.
