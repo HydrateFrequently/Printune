@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
-"""Offline checks for an Printune session G-code.
+"""Offline checks for a Printune session G-code.
 
 Simulates the moves (G90 XY/Z, M83 E) and reports:
   * moves outside the bed, extrusion widths per object family
   * nozzle crashes: a travel passing through something already printed
   * extrusions laid onto another object (an uncleared plate)
-  * gantry: the X gantry spans the bed at the nozzle's Y; a move whose Y band (+-margin) holds
-    printed material more than the rod height above the nozzle tip runs the gantry into it
-  --skip=cool,cone,bridge,mvs simulates pressing "Skip" at those plate pauses
-  --rod=36 (Orca's extruder_clearance_height_to_rod), --margin=10 (mm either side of the nozzle's Y)
-  * toolhead clearance: the tallest printed thing (above the nozzle tip) within
-    radius r of the nozzle, for every move, binned by r
+  * toolhead box: printed material taller than the nozzle tip (and taller than --low, default 1.2 mm)
+    inside the toolhead's box around the nozzle, for every move
+  * gantry: the X gantry spans the bed at the nozzle's Y and reaches as far in Y as the toolhead box;
+    a move whose Y band holds printed material more than the gantry height above the nozzle tip
+    runs the gantry into it
   * filament and a rough time estimate
 Writes paths.npz (segments) for the render scripts.
+
+Usage (the geometry is required, as for printune_gen.py; use your own measurements):
+  check_gcode.py FILE --box=-X,+X,-Y,+Y --gantry=MM [--bed=X0,Y0,X1,Y1 | --bed=W,D]
+                 [--skip=cool,cone,bridge,mvs] [--low=1.2]
+  --skip simulates pressing "Skip" at those plate pauses.
 """
 import math
 import re
@@ -87,10 +91,13 @@ def family(name):
     return re.sub(r"\d+$", "", name).rstrip("_")
 
 
-def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), rod=36.0, margin=10.0):
+def main(path, box, gantry, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), low=1.2):
+    xn, xp, yn, yp = box
     segs, oob = parse(path, h1, h, bed=bed, skip=skip)
     if skip:
         print("simulated: Skip pressed at the plate pause for %s" % ",".join(skip))
+    print("toolhead box %g,%g,%g,%g (-X,+X,-Y,+Y), gantry height %g mm, bed %s"
+          % (xn, xp, yn, yp, gantry, ",".join("%g" % v for v in bed)))
     print("plates: %d" % (1 + sum(1 for s in segs if s[8] == 2)))
     print("segments: %d, outside bed: %d" % (len(segs), len(oob)))
     for t in oob[:5]:
@@ -108,50 +115,51 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), rod=36.0, 
     H = np.zeros((nx, ny), np.float32)
     O = np.zeros((nx, ny), np.int32)    # which object printed the top of each cell
     Hy = np.zeros(ny, np.float32)        # tallest material in each row of Y (what the gantry meets)
-    gantry, gworst = 0, (-99.0, None)
-    gm = int(margin / RES)
+    # 1 mm max-pooled copy of H for the toolhead box (cells grown by one so nothing is missed)
+    C = int(round(1.0 / RES))
+    Hc = np.zeros((nx // C, ny // C), np.float32)
+    gantry_n, gworst = 0, (-99.0, None)
+    box_n, bworst = 0, (-99.0, None)
     oid = {}
     onto = []   # extrusions laid onto another object's material
     crash = []
-    rbins = [3, 6, 10, 15, 20, 30, 45, 65]
-    worst = {r: (-99.0, None) for r in rbins}
-    # precompute disk offsets per bin
-    offs = {}
-    for r in rbins:
-        k = int(r / RES)
-        ii, jj = np.mgrid[-k:k + 1, -k:k + 1]
-        m = (ii * ii + jj * jj) * RES * RES <= r * r
-        offs[r] = (ii[m], jj[m])
-    cur = None
     for n, (x0, y0, x1, y1, z, w, e, ob, trav) in enumerate(segs):
         if trav == 2:
             H[:] = 0.0      # plate cleared
             O[:] = 0
             Hy[:] = 0.0
+            Hc[:] = 0.0
             continue
         L = math.hypot(x1 - x0, y1 - y0)
         steps = max(1, int(L / 2.0))
         # gantry: the tallest material in the Y band the move covers, above the nozzle tip
-        j0 = max(0, int(min(y0, y1) / RES) - gm)
-        j1 = min(ny, int(max(y0, y1) / RES) + gm + 1)
-        over = float(Hy[j0:j1].max()) - z
+        j0 = max(0, int((min(y0, y1) + yn) / RES))
+        j1 = min(ny, int((max(y0, y1) + yp) / RES) + 1)
+        over = float(Hy[j0:j1].max()) - z if j1 > j0 else -99.0
         if over > gworst[0]:
             gworst = (over, (round(x1, 1), round(y1, 1), round(z, 2), ob))
-        if over > rod:
-            gantry += 1
-        # clearance: sample along the move (cheap: endpoints + every 2 mm, every 10th seg for long prints)
+        if over > gantry:
+            gantry_n += 1
+        # toolhead box: sample along the move (endpoints + every quarter; every 3rd extrusion)
         if n % 3 == 0 or trav:
+            hit = False
             for k in range(0, steps + 1, max(1, steps // 4)):
                 px = x0 + (x1 - x0) * k / steps
                 py = y0 + (y1 - y0) * k / steps
-                ci, cj = int(px / RES), int(py / RES)
-                for r in rbins:
-                    ii, jj = offs[r]
-                    a = np.clip(ci + ii, 0, nx - 1)
-                    b = np.clip(cj + jj, 0, ny - 1)
-                    hmax = float(H[a, b].max()) - z
-                    if hmax > worst[r][0]:
-                        worst[r] = (hmax, (round(px, 1), round(py, 1), round(z, 2), ob))
+                a0 = max(0, int((px + xn) // 1.0) - 1)
+                a1 = min(Hc.shape[0], int((px + xp) // 1.0) + 2)
+                b0 = max(0, int((py + yn) // 1.0) - 1)
+                b1 = min(Hc.shape[1], int((py + yp) // 1.0) + 2)
+                if a1 <= a0 or b1 <= b0:
+                    continue
+                top = float(Hc[a0:a1, b0:b1].max())
+                hmax = top - z
+                if top > low:
+                    if hmax > bworst[0]:
+                        bworst = (hmax, (round(px, 1), round(py, 1), round(z, 2), ob))
+                    hit = hit or hmax > 0.3
+            if hit:
+                box_n += 1
         if trav:
             # nozzle crash: path through printed material higher than the nozzle tip
             for k in range(steps + 1):
@@ -188,17 +196,22 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), rod=36.0, 
         sub[m] = np.maximum(sub[m], z)
         O[ia:ib, ja:jb][m] = me
         Hy[ja:jb] = np.maximum(Hy[ja:jb], z)
+        if m.any():
+            # refresh the 1 mm cells this extrusion touched
+            ca, cb = ia // C, min(Hc.shape[0], (ib - 1) // C + 1)
+            da, db = ja // C, min(Hc.shape[1], (jb - 1) // C + 1)
+            blk = H[ca * C:cb * C, da * C:db * C]
+            Hc[ca:cb, da:db] = blk.reshape(cb - ca, C, db - da, C).max(axis=(1, 3))
     print("extrusions onto another object: %d" % len(onto))
     for c in onto[:10]:
         print("  ", c)
-    print("gantry over prints taller than the rod height (%g mm): %d moves; worst %+.2f mm above the nozzle at %s"
-          % (rod, gantry, gworst[0], gworst[1]))
+    print("gantry over prints taller than the gantry height (%g mm): %d moves; worst %+.2f mm above the nozzle at %s"
+          % (gantry, gantry_n, gworst[0], gworst[1]))
+    print("toolhead box over finished prints (taller than %g mm and > 0.3 mm above the nozzle tip): %d moves; "
+          "worst %s" % (low, box_n, ("%+.2f mm above the nozzle at %s" % bworst) if bworst[1] else "-"))
     print("nozzle crashes on travels: %d" % len(crash))
     for c in crash[:10]:
         print("  ", c)
-    print("tallest printed material above the nozzle tip within r of the nozzle (worst move):")
-    for r in rbins:
-        print("  r <= %4.0f mm: %+6.2f mm   at %s" % (r, worst[r][0], worst[r][1]))
     segs = [s for s in segs if s[8] != 2]
     np.savez_compressed(path + ".paths.npz",
                         segs=np.array([s[:7] for s in segs], np.float32),
@@ -209,11 +222,23 @@ def main(path, R=45.0, h1=0.25, h=0.2, bed=(0, 0, 375, 388), skip=(), rod=36.0, 
     print("filament %.2f m" % (e_tot / 1000))
 
 
+def _floats(text, n, what):
+    v = [float(t) for t in text.split(",")]
+    if len(v) != n:
+        raise SystemExit("check_gcode: %s needs %d numbers" % (what, n))
+    return v
+
+
 if __name__ == "__main__":
-    # check_gcode.py FILE [R] [W,D] [--skip=cool,cone,bridge,mvs] [--rod=36] [--margin=10]
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     kw = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+    if len(args) != 1 or "box" not in kw or "gantry" not in kw:
+        raise SystemExit(__doc__ + "\ncheck_gcode: give the file, --box and --gantry (the old radius "
+                         "and rod arguments are gone; no geometry is assumed)")
+    xn, xp, yn, yp = (abs(v) for v in _floats(kw["box"], 4, "--box"))
+    bed = (0, 0, 375, 388)
+    if kw.get("bed"):
+        b = [float(t) for t in kw["bed"].split(",")]
+        bed = tuple(b) if len(b) == 4 else (0, 0) + tuple(_floats(kw["bed"], 2, "--bed"))
     skip = tuple(kw["skip"].split(",")) if kw.get("skip") else ()
-    bed = (0, 0) + tuple(float(v) for v in args[2].split(",")) if len(args) > 2 else (0, 0, 375, 388)
-    main(args[0], float(args[1]) if len(args) > 1 else 45.0, bed=bed, skip=skip,
-         rod=float(kw.get("rod", 36)), margin=float(kw.get("margin", 10)))
+    main(args[0], (-xn, xp, -yn, yp), float(kw["gantry"]), bed=bed, skip=skip, low=float(kw.get("low", 1.2)))

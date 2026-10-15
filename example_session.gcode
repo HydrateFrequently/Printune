@@ -11,7 +11,8 @@
 ; Cooling: -
 ; Bridges: -
 ; Max flow bands: -
-; Firmware retraction: True, z-hop 0.20, toolhead clearance radius 65 mm
+; Firmware retraction: True, z-hop 0.20
+; Machine geometry (the user's own measurements, risk accepted): bed area 0,0,375,388, toolhead box -30,30,-40,25 (-X,+X,-Y,+Y), gantry height 42 mm
 SET_GCODE_VARIABLE MACRO=_PRINTUNE VARIABLE=loaded VALUE=1 ; fails fast if printune.cfg is missing
 EXCLUDE_OBJECT_DEFINE NAME=PATCH_1 CENTER=24.500,21.500 POLYGON=[[12.000,6.000],[37.000,6.000],[37.000,37.000],[12.000,37.000]]
 EXCLUDE_OBJECT_DEFINE NAME=PATCH_2 CENTER=187.500,24.500 POLYGON=[[175.000,12.000],[200.000,12.000],[200.000,37.000],[175.000,37.000]]

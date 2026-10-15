@@ -236,8 +236,25 @@ class Printune:
         self.pa_range = config.get("pa_range", gen.OPTIONS["pa"])
         self.ret_range = config.get("ret_range", gen.OPTIONS["ret"])
         self.mvs_range = config.get("mvs_range", "")      # "" = per filament type
-        # toolhead radius for keeping travel clear of finished prints (0 = Orca's 65 mm)
-        self.toolhead_radius = config.getfloat("toolhead_radius", 0., minval=0., maxval=200.)
+        if config.get("toolhead_radius", None) is not None:
+            # replaced by the machine setup's toolhead box; read so an old config still starts
+            logging.warning("printune: toolhead_radius is no longer used: the machine setup "
+                            "(toolhead_box) replaces it")
+        # Machine setup: the user's own measurements, saved under [printune] by SAVE_CONFIG.
+        # Nothing that prints is generated until all of it is set and the risk is accepted.
+        self.setup = {}
+        for key, parse in (("bed_area", gen.parse_bed_area), ("toolhead_box", gen.parse_toolhead_box),
+                           ("gantry_height", gen.parse_gantry_height)):
+            raw = config.get(key, "").strip()
+            if raw:
+                try:
+                    self.setup[key] = parse(raw)
+                except ValueError as e:
+                    raise config.error("[printune] %s (fix it, or delete it and run the machine setup "
+                                       "again)" % (e,))
+        self.setup["accepted"] = config.getboolean("setup_accepted", False)
+        self._setup_saved = dict(self.setup)     # what printer.cfg holds
+        self._bed_hint = None
         # extra Orca settings for the wizard's sessions, one "key = value" per line
         self.orca = {}
         for line in config.get("orca_settings", "").splitlines():
@@ -284,6 +301,8 @@ class Printune:
             "_PRINTUNE_SHAPER_RUN", self.cmd_PRINTUNE_SHAPER_RUN, desc=self.cmd_PRINTUNE_SHAPER_RUN_help)
         gcode.register_command(
             "_PRINTUNE_GRAPH", self.cmd_PRINTUNE_GRAPH, desc=self.cmd_PRINTUNE_GRAPH_help)
+        gcode.register_command(
+            "_PRINTUNE_SETUP", self.cmd_PRINTUNE_SETUP, desc=self.cmd_PRINTUNE_SETUP_help)
 
     def get_status(self, eventtime):
         soak = {"active": False, "elapsed": 0., "min": self.soak_min, "max": self.soak_max,
@@ -296,7 +315,7 @@ class Printune:
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
                 "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
-                "shaper": self.shaper, "graphs": self.graphs,
+                "shaper": self.shaper, "graphs": self.graphs, "setup": self._setup_status(),
                 "procs": {k: list(v) for k, v in PROCS.items()},
                 "filaments": {k: {"tmin": f["t"][0], "tmax": f["t"][1], "bed": f["bed"],
                                   "soak": f["soak"]} for k, f in gen.FILAMENTS.items()}}
@@ -591,6 +610,182 @@ class Printune:
         if not new:
             gcmd.respond_info("Printune: no new Shake&Tune graph in %s" % folder)
 
+    # ---------------- machine setup (mandatory before anything prints) ----------------
+    SETUP_KEYS = ("bed_area", "toolhead_box", "gantry_height")
+
+    def _axes(self):
+        """The axis limits (x0, y0, x1, y1) where the nozzle can go."""
+        st = self.printer.lookup_object("toolhead").get_status(self.reactor.monotonic())
+        amin, amax = st["axis_minimum"], st["axis_maximum"]
+        return (amin[0], amin[1], amax[0], amax[1])
+
+    def _bed_suggestion(self):
+        """The default bed area: [bed_mesh] mesh_min/mesh_max (where the probe has been, so on the
+        plate), cut to the axis limits. None without a rectangular [bed_mesh]."""
+        if self._bed_hint is None:
+            hint = {"area": None, "source": "", "note": ""}
+            try:
+                cf = self.printer.lookup_object("configfile").get_status(self.reactor.monotonic())
+                raw = cf.get("config", {}).get("bed_mesh")
+                if raw is None:
+                    hint["note"] = "No [bed_mesh] in the printer's config: enter the bed area yourself"
+                elif "mesh_min" not in raw or "mesh_max" not in raw:
+                    hint["note"] = "The bed mesh is round: enter the bed area yourself"
+                else:
+                    mn = [float(v) for v in str(raw["mesh_min"]).split(",")]
+                    mx = [float(v) for v in str(raw["mesh_max"]).split(",")]
+                    ax = self._axes()
+                    a = (max(mn[0], ax[0]), max(mn[1], ax[1]), min(mx[0], ax[2]), min(mx[1], ax[3]))
+                    hint.update(area=[round(v, 1) for v in a], source="bed_mesh")
+            except Exception:
+                logging.exception("printune: reading [bed_mesh] for the setup")
+                hint["note"] = "Could not read [bed_mesh]: enter the bed area yourself"
+            self._bed_hint = hint
+        return self._bed_hint
+
+    def _setup_missing(self):
+        miss = [k for k in self.SETUP_KEYS if k not in self.setup]
+        if not self.setup.get("accepted"):
+            miss.append("risk")
+        return miss
+
+    def _setup_status(self):
+        st = {k: (list(self.setup[k]) if isinstance(self.setup.get(k), tuple) else self.setup.get(k))
+              for k in self.SETUP_KEYS}
+        st["accepted"] = bool(self.setup.get("accepted"))
+        st["missing"] = self._setup_missing()
+        st["ready"] = not st["missing"]
+        try:
+            cf = self.printer.lookup_object("configfile")
+            st["unsaved"] = (self.setup != self._setup_saved
+                             and bool(getattr(cf, "save_config_pending", True)))
+            st["axes"] = [round(v, 1) for v in self._axes()]
+        except Exception:
+            st["unsaved"], st["axes"] = False, None
+        try:
+            hint = self._bed_suggestion()
+        except Exception:
+            hint = {"area": None, "source": "", "note": ""}
+        st["bed_hint"], st["bed_hint_note"] = hint["area"], hint["note"]
+        st["orca_area"] = self.orca.get("printable_area", "")
+        return st
+
+    def _require_setup(self, gcmd):
+        """Every command that generates or starts a print calls this first (server side, so no
+        page or macro can get round it)."""
+        miss = self._setup_missing()
+        if miss:
+            names = {"bed_area": "bed area", "toolhead_box": "toolhead box",
+                     "gantry_height": "gantry height", "risk": "accepting the risk"}
+            raise gcmd.error(
+                "Printune: the machine setup is not done (missing: %s). Printune makes no assumptions "
+                "about your printer: open Machine setup on the Printune page or in the PRINTUNE menu, "
+                "or run _PRINTUNE_SETUP" % (", ".join(names[m] for m in miss),))
+
+    cmd_PRINTUNE_SETUP_help = ("Printune: machine setup (BED=x0,y0,x1,y1|mesh TOOLHEAD=-X,+X,-Y,+Y "
+                               "GANTRY=mm ACCEPT=1 SAVE=1); no parameters shows it")
+
+    def cmd_PRINTUNE_SETUP(self, gcmd):
+        ui = gcmd.get_int("UI", 0)
+        try:
+            self._setup_cmd(gcmd)
+        except Exception:
+            if ui:
+                self.gcode.respond_raw("// action:prompt_end")
+            raise
+        if ui:
+            self.gcode.run_script_from_command("_PRINTUNE_SETUP_UI")
+
+    def _setup_cmd(self, gcmd):
+        bed = gcmd.get("BED", None)
+        box = gcmd.get("TOOLHEAD", None)
+        gantry = gcmd.get("GANTRY", None)
+        accept = gcmd.get_int("ACCEPT", None, minval=0, maxval=1)
+        save = gcmd.get_int("SAVE", 0, minval=0, maxval=1)
+        if bed is None and box is None and gantry is None and accept is None and not save:
+            self._setup_report(gcmd)
+            if not gcmd.get_int("UI", 0):
+                self.gcode.run_script_from_command("_PRINTUNE_SETUP_UI")
+            return
+        ps = self.printer.lookup_object("print_stats").get_status(self.reactor.monotonic())
+        if ps["state"] in ("printing", "paused"):
+            raise gcmd.error("Printune: finish or cancel the print before changing the machine setup")
+        new = {}
+        try:
+            if bed is not None:
+                if bed.strip().lower() == "mesh":
+                    hint = self._bed_suggestion()
+                    if not hint["area"]:
+                        raise ValueError(hint["note"] or "no bed mesh area to use")
+                    new["bed_area"] = tuple(hint["area"])
+                else:
+                    new["bed_area"] = gen.parse_bed_area(bed)
+                ax = self._axes()
+                a = new["bed_area"]
+                if a[0] < ax[0] - 1e-6 or a[1] < ax[1] - 1e-6 or a[2] > ax[2] + 1e-6 or a[3] > ax[3] + 1e-6:
+                    raise ValueError("the bed area %s reaches past the axis limits %s"
+                                     % (gen.fmt_box(a), gen.fmt_box(ax)))
+            if box is not None:
+                new["toolhead_box"] = gen.parse_toolhead_box(box)
+            if gantry is not None:
+                new["gantry_height"] = gen.parse_gantry_height(gantry)
+        except ValueError as e:
+            raise gcmd.error("Printune: %s" % (e,))
+        changed = [k for k, v in new.items() if self.setup.get(k) != v]
+        configfile = self.printer.lookup_object("configfile")
+        for k, v in new.items():
+            self.setup[k] = v
+            configfile.set("printune", k, gen.fmt_box(v) if isinstance(v, tuple) else "%g" % v)
+        if changed and accept is None and self.setup.get("accepted"):
+            # new numbers need a new confirmation
+            accept = 0
+            gcmd.respond_info("Printune: the values changed, so the risk has to be accepted again")
+        if accept is not None:
+            if accept and any(k not in self.setup for k in self.SETUP_KEYS):
+                raise gcmd.error("Printune: enter the bed area, the toolhead box and the gantry height "
+                                 "before accepting")
+            self.setup["accepted"] = bool(accept)
+            configfile.set("printune", "setup_accepted", "True" if accept else "False")
+        self._setup_report(gcmd)
+        if save:
+            # SAVE_CONFIG writes every pending change; Kalico can save without a restart
+            try:
+                self.gcode.run_script_from_command("SAVE_CONFIG RESTART=0")
+                self._setup_saved = dict(self.setup)
+            except gcmd.error as e:
+                raise gcmd.error(
+                    "Printune: could not save to printer.cfg: %s\nIf a machine setup value is also set "
+                    "in an included file (printune_settings.cfg), remove it there; the values above "
+                    "stay active until the next restart." % (e,))
+
+    def _setup_report(self, gcmd):
+        su = self.setup
+        lines = ["Printune machine setup (your own measurements):",
+                 "  bed area: %s" % (gen.fmt_box(su["bed_area"]) if "bed_area" in su else "not set"),
+                 "  toolhead box -X,+X,-Y,+Y: %s" % ((gen.fmt_box(su["toolhead_box"]) + " mm")
+                                                       if "toolhead_box" in su else "not set"),
+                 "  gantry height: %s" % (("%g mm" % su["gantry_height"]) if "gantry_height" in su
+                                          else "not set"),
+                 "  risk accepted: %s" % ("yes" if su.get("accepted") else "no")]
+        miss = self._setup_missing()
+        if miss == ["risk"]:
+            lines.append("Check that these are your own measurements, then accept the risk: "
+                         "_PRINTUNE_SETUP ACCEPT=1 SAVE=1 (Printune and its authors take no responsibility "
+                         "for the generated G-code, collisions or damage; no warranty, GPL-3.0)")
+        elif miss:
+            hint = self._bed_suggestion()
+            lines.append("Set it with, for example (your numbers, not these):")
+            lines.append("  _PRINTUNE_SETUP BED=%s TOOLHEAD=-30,30,-40,25 GANTRY=42" % (
+                "mesh" if hint["area"] else "x0,y0,x1,y1"))
+            lines.append("  _PRINTUNE_SETUP ACCEPT=1 SAVE=1")
+            if hint["area"]:
+                lines.append("  (BED=mesh uses the bed mesh area cut to the axis limits: %s)"
+                             % gen.fmt_box(hint["area"]))
+        else:
+            lines.append("Done. Printune and its authors take no responsibility for the generated G-code, "
+                         "collisions or damage.")
+        gcmd.respond_info("\n".join(lines))
+
     # ---------------- wizard: build and start a session ----------------
     cmd_PRINTUNE_START_help = "Printune: build a tuning session for a filament and start it"
 
@@ -634,6 +829,7 @@ class Printune:
         raise gcmd.error("Printune: " + msg)
 
     def _start(self, gcmd):
+        self._require_setup(gcmd)
         now = self.reactor.monotonic()
         ps = self.printer.lookup_object("print_stats").get_status(now)
         if ps["state"] in ("printing", "paused"):
@@ -778,9 +974,10 @@ class Printune:
         """Orca settings and Printune options for a wizard session, from the printer's config."""
         th = self.printer.lookup_object("toolhead")
         st = th.get_status(self.reactor.monotonic())
-        amin, amax = st["axis_minimum"], st["axis_maximum"]
-        x0, y0 = max(0., amin[0]), max(0., amin[1])
-        x1, y1 = amax[0], amax[1]
+        amax = st["axis_maximum"]
+        # the bed area from the machine setup (the generator keeps inside orca_settings'
+        # printable_area too, when that is set)
+        x0, y0, x1, y1 = self.setup["bed_area"]
         fil = gen.FILAMENTS[ftype]
         nz = float(exc.get("nozzle_diameter", .4))
         mid = gen.mid_temp(tmin, tmax)
@@ -828,8 +1025,11 @@ class Printune:
         pr = settings.get("printer", {})
         opts["zv"] = "%g" % (float(pr.get("max_z_velocity", st["max_velocity"])),)
         opts["za"] = "%g" % (float(pr.get("max_z_accel", st["max_accel"])),)
-        if self.toolhead_radius:
-            opts["clearance"] = "%g" % (self.toolhead_radius,)
+        # the user's measured geometry; the generator refuses without it
+        opts["bed_area"] = gen.fmt_box(self.setup["bed_area"])
+        opts["toolhead_box"] = gen.fmt_box(self.setup["toolhead_box"])
+        opts["gantry_height"] = "%g" % (self.setup["gantry_height"],)
+        opts["accept_risk"] = "1" if self.setup.get("accepted") else "0"
         return cfg, opts, mid
 
     def _exported_preset(self, name):

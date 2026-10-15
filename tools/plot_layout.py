@@ -5,10 +5,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.patches import Rectangle, Circle
+from matplotlib.patches import Rectangle
 
+# plot_layout.py SESSION.gcode OUT.png [-X,+X,-Y,+Y]  (the toolhead box the session was made with)
 path, out = sys.argv[1], sys.argv[2]
-R = float(sys.argv[3]) if len(sys.argv) > 3 else 45
+BOX = [abs(float(v)) for v in sys.argv[3].split(",")] if len(sys.argv) > 3 else None
 d = np.load(path + ".paths.npz")
 segs, trav, obj = d["segs"], d["trav"], d["obj"]
 fam = np.array([re.sub(r"\d+$", "", o).rstrip("_") for o in obj])
@@ -35,12 +36,14 @@ for i, (name, pts) in enumerate(defs):
     x0, y0 = pts.min(0); x1, y1 = pts.max(0)
     ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, lw=0.6, ls="--", ec="0.4"))
     ax.text(x0 + 1, y1 + 1, "%d %s" % (i + 1, name), fontsize=6.5)
-    if name.startswith("RET"):
-        ax.add_patch(Circle(((x0 + x1) / 2, (y0 + y1) / 2), R + (x1 - x0) / 2, fill=False, lw=0.6, ec="#B279A2", ls=":"))
+    if name.startswith("RET") and BOX:
+        # where the toolhead box reaches while this tower prints
+        ax.add_patch(Rectangle((x0 - BOX[0], y0 - BOX[2]), x1 - x0 + BOX[0] + BOX[1], y1 - y0 + BOX[2] + BOX[3],
+                               fill=False, lw=0.6, ec="#B279A2", ls=":"))
 ax.set_xlim(-5, 380); ax.set_ylim(-5, 393); ax.set_aspect("equal")
 ax.set_xlabel("X (mm)  - bed front is at the bottom"); ax.set_ylabel("Y (mm)")
 ax.set_title("ROUGH layout check - Printune session, top view (assumed 375 x 388 bed)\n"
-             "numbers = print order; dotted circles = %d mm toolhead clearance around the towers" % R, fontsize=10)
+             "numbers = print order" + ("; dotted: toolhead box %s swept around the towers" % sys.argv[3] if BOX else ""), fontsize=10)
 from matplotlib.lines import Line2D
 ax.legend([Line2D([0], [0], color=c, lw=3) for c in list(col.values())[:-1]],
           ["1 squish patches", "1 extra patches (optional)", "2 PA pattern", "2 PA fine (optional)",

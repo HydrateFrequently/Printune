@@ -33,6 +33,13 @@ plug=$cfg/printune_plugin.cfg
 if [ -f /home/pi/host/printune.py ]; then
   ln -sfn /home/pi/host/printune.py /home/pi/kalico/klippy/plugins/printune.py
   printf '[printune]\nenclosed: True\nchamber_sensor: temperature_sensor chamber\nsoak_min: 5\nsoak_max: 30\n' > $plug
+  # Machine setup: SETUP=1 (default) gives the virtual printer a known geometry so scripted
+  # runs aren't blocked; SETUP=0 leaves it out, to try the setup step (the page saves it into
+  # printer.cfg). Values in this included file win over saved ones, so use SETUP=0 to edit them.
+  if [ "${SETUP:-1}" = 1 ]; then
+    printf 'bed_area: %s\ntoolhead_box: %s\ngantry_height: %s\nsetup_accepted: True\n' \
+      "${SETUP_BED:-5,5,370,383}" "${SETUP_TOOLHEAD:--35,35,-45,40}" "${SETUP_GANTRY:-40}" >> $plug
+  fi
 else
   rm -f /home/pi/kalico/klippy/plugins/printune.py
   echo "# printune.py not found in the mounted folder" > $plug

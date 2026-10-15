@@ -75,9 +75,9 @@ if [ ! -e "$CONFIG_DIR/printune_settings.cfg" ]; then
 #ret_range: 0-1.0/0.1
 # Max flow tower bands in mm3/s (default 5-30/1, TPU 1-12/0.5)
 #mvs_range: 5-30/1
-# Toolhead radius (mm) the layout keeps clear of finished prints; default 65.
-# A small toolhead (Voron V0 about 35) fits more tests on one plate.
-#toolhead_radius: 65
+# The machine setup (bed_area, toolhead_box, gantry_height, setup_accepted) is NOT set
+# here: enter it on the Printune page or with _PRINTUNE_SETUP, which saves it into
+# printer.cfg. A value set in this file can't be saved from the page.
 # Belt tension: starting target (Hz) and how close both belts must get (Hz)
 #belt_target: 110
 #belt_tolerance: 2

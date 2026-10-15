@@ -36,6 +36,7 @@ it does not start again by itself after a reboot.
 | Add print files | drop them in `gcodes/` or upload in Mainsail |
 | Read logs | `logs/klippy.log`, `logs/moonraker.log` |
 | Test a printer without an accelerometer or Shake&Tune | set `ACCEL=0` (no accelerometer, no input shaper) or `SHAKETUNE=0` in docker-compose.yml, then `docker compose up -d`. Their Printune steps then show greyed out |
+| Try Printune's machine setup step | set `SETUP=0` in docker-compose.yml, then `docker compose up -d`. With `SETUP=1` (the default) the printer starts with a known test geometry (`SETUP_BED`, `SETUP_TOOLHEAD`, `SETUP_GANTRY`, risk accepted) so scripted sessions run; those values sit in an included file, so they win over anything saved from the page |
 | See Shake&Tune's graphs | they land in Mainsail's config files under `ShakeTune_results/` |
 | Peek at the thermal model | `SIM_THERMAL` in the console (`SIM_THERMAL CHAMBER=45` sets a value) |
 | Pluck or tension the belts | `SIM_PLUCK BELT=A`, `SIM_BELTS A=110 B=105`, `SIM_BELTS TURN_B=0.25` |

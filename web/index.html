@@ -125,6 +125,23 @@ input[type=text], input[type=number] {
 .toggle[aria-checked=true] .sw { background: var(--primary); }
 .toggle[aria-checked=true] .sw::after { left: 25px; }
 .err-box { background: var(--err-soft); color: var(--err); border-radius: 10px; padding: 10px 14px; margin: 10px 0; }
+/* Machine setup */
+.test-card.need { border: 2px solid var(--warn); }
+.test-card.need b { color: var(--warn); }
+.test-card.done b::after { content: " \2713"; color: var(--ok); }
+.locked { opacity: .55; }
+.lock-note { border: 2px solid var(--warn); }
+.lock-note h2 { color: var(--warn); }
+.grid4 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.grid4 label { display: block; font-size: 15px; color: var(--muted); margin-bottom: 4px; }
+.diagram { display: block; width: 100%; max-width: 420px; height: auto; margin: 8px auto; color: var(--text); }
+.diagram .accent { color: var(--primary); }
+.check { display: flex; gap: 12px; align-items: flex-start; padding: 12px; border: 2px solid var(--warn);
+  border-radius: 10px; cursor: pointer; font-size: 16px; font-weight: 400 !important; }
+.check input { flex: none; width: 26px; height: 26px; margin: 2px 0 0; accent-color: var(--primary); }
+.how { margin: 8px 0; padding: 0 0 0 4px; }
+.how li { margin: 6px 0; }
+details.sub > summary { cursor: pointer; color: var(--primary); font-weight: 600; min-height: 44px; display: flex; align-items: center; }
 /* Prompt card */
 #prompt { scroll-margin-top: 72px; border: 2px solid var(--primary); box-shadow: 0 0 0 4px var(--primary-soft); }
 #prompt h2 { font-size: 22px; }
@@ -231,8 +248,10 @@ input[type=text], input[type=number] {
       <p id="busyText"></p>
     </div>
     <div id="startArea">
-      <h2 class="section">1. The printer</h2>
+      <h2 class="section">1. The printer (pre-flight)</h2>
       <div class="grid2">
+        <button type="button" class="test-card" id="setupBtn"><b>Machine setup</b>
+          <span id="setupSub">Your bed area, toolhead size and gantry height. Needed before any test print.</span></button>
         <button type="button" class="test-card" id="beltBtn"><b>Belt tension</b>
           <span>Pluck each belt; the accelerometer hears it and tells you which way to turn.</span></button>
         <a class="test-card off" id="beltOff" href="https://docs.kalico.gg/Measuring_Resonances.html"
@@ -242,6 +261,13 @@ input[type=text], input[type=number] {
           <span>Sets the starting Z offset with the printer's own paper test. The first layer test fine-tunes it.</span></button>
       </div>
       <h2 class="section">2. A filament</h2>
+      <div class="card lock-note" id="lockNote" hidden>
+        <h2>Test prints are locked</h2>
+        <p>Printune prints nothing until the machine setup is done: your bed area, toolhead size and gantry
+          height, measured on your printer, and the risk accepted. The belts, the Z offset, the input shaper and
+          the hands-on tools work without it.</p>
+        <button type="button" class="block primary" id="lockSetupBtn">Machine setup</button>
+      </div>
       <button type="button" class="big" id="wizardBtn">Tuning Wizard
         <small>First layer, pressure advance, flow and retraction, one after the other, with a pick after each test</small></button>
       <h2 class="section">Or run one test</h2>
@@ -264,6 +290,8 @@ input[type=text], input[type=number] {
     </div>
     <details class="card" id="tools">
       <summary>Hands-on tools</summary>
+      <p class="small muted">These extrude in the air with the toolhead where it is and do not move over the bed,
+        so they do not need the machine setup.</p>
       <div class="tool" style="border:0;margin-top:0">
         <h3>Extruder calibration</h3>
         <p class="small muted">Heat the nozzle, mark the filament 120 mm above the extruder entry, tap Extrude,
@@ -293,6 +321,108 @@ input[type=text], input[type=number] {
         <button type="button" class="block danger" id="nozzleOffBtn">Turn nozzle off</button>
       </div>
     </details>
+  </section>
+
+  <!-- MACHINE SETUP -->
+  <section id="setup" hidden>
+    <div class="card">
+      <h2>Machine setup</h2>
+      <div class="err-box" id="setupErr" hidden></div>
+      <p>Printune prints several tests on one plate, one after the other. While it prints a later test, the
+        toolhead and the X gantry move next to and over the earlier ones. A finished print that is taller than the
+        gap under the toolhead or under the gantry gets hit: prints knocked off, a bent nozzle, skipped steps or
+        worse. Printune places the tests with the numbers below. <b>It assumes none of them: they are yours to
+        measure.</b></p>
+      <svg class="diagram" viewBox="0 0 340 170" role="img" aria-labelledby="dgTitle">
+        <title id="dgTitle">Top view: the toolhead box around the nozzle with its four sides. Side view: the gantry height from the bed to the underside of the X gantry.</title>
+        <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+        <text x="80" y="14" font-size="12" text-anchor="middle" fill="currentColor">Top view</text>
+        <rect x="25" y="30" width="110" height="110" rx="6" fill="none" stroke="currentColor" stroke-width="2"/>
+        <circle cx="70" cy="90" r="5" class="accent" fill="currentColor"/>
+        <g class="accent" stroke="currentColor" stroke-width="1.5" marker-end="url(#ah)">
+          <line x1="65" y1="90" x2="28" y2="90"/><line x1="75" y1="90" x2="132" y2="90"/>
+          <line x1="70" y1="95" x2="70" y2="137"/><line x1="70" y1="85" x2="70" y2="33"/></g>
+        <g font-size="12" fill="currentColor"><text x="30" y="84">-X</text><text x="110" y="84">+X</text>
+          <text x="75" y="134">-Y</text><text x="75" y="44">+Y</text></g>
+        <text x="80" y="160" font-size="11" text-anchor="middle" fill="currentColor">dot: the nozzle</text>
+        <text x="255" y="14" font-size="12" text-anchor="middle" fill="currentColor">Side view</text>
+        <rect x="190" y="40" width="130" height="16" fill="currentColor" opacity=".35"/>
+        <text x="255" y="35" font-size="11" text-anchor="middle" fill="currentColor">X gantry</text>
+        <path d="M232 56 h26 v30 l-8 14 h-10 l-8 -14 z" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M241 100 h8 l-4 7 z" class="accent" fill="currentColor"/>
+        <line x1="180" y1="108" x2="330" y2="108" stroke="currentColor" stroke-width="3"/>
+        <text x="300" y="124" font-size="11" text-anchor="middle" fill="currentColor">bed</text>
+        <line x1="205" y1="104" x2="205" y2="60" class="accent" stroke="currentColor" stroke-width="1.5" marker-start="url(#ah)" marker-end="url(#ah)"/>
+        <text x="255" y="146" font-size="11" text-anchor="middle" fill="currentColor">arrow: gantry height,</text>
+        <text x="255" y="160" font-size="11" text-anchor="middle" fill="currentColor">nozzle at Z=0</text>
+      </svg>
+
+      <div class="field">
+        <span class="label"><span class="stepnum">1</span>Bed area: where the nozzle may print (mm)</span>
+        <div class="grid4">
+          <div><label for="bx0">X from</label><input type="number" id="bx0" inputmode="decimal" step="0.1"></div>
+          <div><label for="bx1">X to</label><input type="number" id="bx1" inputmode="decimal" step="0.1"></div>
+          <div><label for="by0">Y from</label><input type="number" id="by0" inputmode="decimal" step="0.1"></div>
+          <div><label for="by1">Y to</label><input type="number" id="by1" inputmode="decimal" step="0.1"></div>
+        </div>
+        <button type="button" class="block" id="meshBtn" style="margin-top:10px" hidden></button>
+        <p class="help" id="bedHelp"></p>
+      </div>
+
+      <div class="field">
+        <span class="label"><span class="stepnum">2</span>Toolhead box: from the nozzle to each side (mm)</span>
+        <div class="grid4">
+          <div><label for="tXn">toward -X</label><input type="number" id="tXn" inputmode="decimal" step="1" min="1"></div>
+          <div><label for="tXp">toward +X</label><input type="number" id="tXp" inputmode="decimal" step="1" min="1"></div>
+          <div><label for="tYn">toward -Y</label><input type="number" id="tYn" inputmode="decimal" step="1" min="1"></div>
+          <div><label for="tYp">toward +Y</label><input type="number" id="tYp" inputmode="decimal" step="1" min="1"></div>
+        </div>
+        <p class="help">The whole toolhead: fans, ducts, probe, carriage, cable mounts. The X gantry is taken to reach
+          as far in Y as this box: if the beam or anything under it sticks out further in Y, use that.</p>
+        <details class="sub">
+          <summary>How to measure the toolhead box</summary>
+          <ol class="how">
+            <li>-X is the side where the X position gets smaller when you move the toolhead, +X where it gets
+              larger; the same for Y. Check it with the move buttons, don't guess front and back.</li>
+            <li>Look at the toolhead from above and find the part that sticks out furthest on each side.</li>
+            <li>Measure from the centre of the nozzle tip to that part with a ruler or calipers held flat under the
+              toolhead. Round up by a few mm.</li>
+            <li>Or with the printer: stand a box with a straight edge on the bed. Move the toolhead in X until its
+              side just touches the box and note X. Raise Z, move until the nozzle tip is right above the box's
+              edge and note X again. The difference is that side's distance. The same for the other sides.</li>
+          </ol>
+        </details>
+      </div>
+
+      <div class="field">
+        <label for="gantryIn"><span class="stepnum">3</span>Gantry height (mm)</label>
+        <input type="number" id="gantryIn" inputmode="decimal" step="0.5" min="1">
+        <p class="help">From the bed to the underside of the X gantry (the beam the toolhead rides on, with its
+          brackets and anything hanging below it, not the toolhead) with the nozzle at Z=0.</p>
+        <details class="sub">
+          <summary>How to measure the gantry height</summary>
+          <ol class="how">
+            <li>Home the printer with your Z offset set, and move to Z=50.</li>
+            <li>Measure from the bed surface straight up to the lowest point of the X gantry.</li>
+            <li>Take 50 off and round down by a couple of mm. Example: 92 mm at Z=50 gives 42 mm minus a margin.</li>
+          </ol>
+        </details>
+      </div>
+
+      <div class="field">
+        <span class="label"><span class="stepnum">4</span>Your responsibility</span>
+        <label class="check" for="riskCk"><input type="checkbox" id="riskCk">
+          <span>I measured these values myself on my printer. I accept that Printune and its authors take no
+            responsibility for the G-code it generates, for collisions or for any damage. Printune comes without
+            any warranty (GPL-3.0, sections 15 and 16).</span></label>
+      </div>
+      <p class="small muted" id="setupState"></p>
+      <button type="button" class="big" id="setupSaveBtn" style="min-height:64px">Save machine setup</button>
+      <p class="help">Saved under [printune] in printer.cfg (SAVE_CONFIG, no restart). It also writes any other
+        change that is waiting for SAVE_CONFIG. Change it any time here or with _PRINTUNE_SETUP in the console.</p>
+      <button type="button" class="block text-btn" id="setupBackBtn" style="margin-top:6px">Back</button>
+    </div>
   </section>
 
   <!-- FILAMENT FORM -->
@@ -945,6 +1075,7 @@ function saveForm() {
 }
 
 function openForm(mode) {
+  if (!setupReady()) { openSetup(); return; }
   form.mode = mode;
   const p = procs();
   form.proc = p[mode] ? mode : procOf(mode);
@@ -1017,6 +1148,7 @@ function buildStartCommand() {
 async function startSession() {
   $("formErr").hidden = true;
   if (!form.tests.size) return;
+  if (!setupReady()) { openSetup(); return; }
   if (!(await ask("Make sure the plate is clean and empty. Printune generates the G-code for this print; you run it at your own risk, and we take no responsibility for what it does. Stay near the printer. Start?", "Start"))) return;
   saveForm();
   store("printune.soakOn", pt().enclosed && form.soak ? 1 : 0);
@@ -1042,6 +1174,103 @@ function formError(text) {
   $("formErr").hidden = false;
   render();
   window.scrollTo(0, 0);
+}
+
+// ---------- machine setup ----------
+function setupSt() { return pt().setup || {}; }
+function setupReady() { return setupSt().ready === true; }
+function g1(v) { return String(Math.round(Number(v) * 10) / 10); }
+const BED_IDS = ["bx0", "by0", "bx1", "by1"];
+const BOX_IDS = ["tXn", "tXp", "tYn", "tYp"];
+
+function fillSetup() {
+  const st = setupSt();
+  const bed = Array.isArray(st.bed_area) ? st.bed_area : (Array.isArray(st.bed_hint) ? st.bed_hint : null);
+  BED_IDS.forEach((id, i) => { $(id).value = bed ? g1(bed[i]) : ""; });
+  const box = Array.isArray(st.toolhead_box) ? st.toolhead_box : null;
+  BOX_IDS.forEach((id, i) => { $(id).value = box ? g1(Math.abs(box[i])) : ""; });
+  $("gantryIn").value = st.gantry_height ? g1(st.gantry_height) : "";
+  $("riskCk").checked = !!st.accepted;
+  $("setupErr").hidden = true;
+}
+
+function openSetup() {
+  fillSetup();
+  view = "setup";
+  render();
+  window.scrollTo(0, 0);
+}
+
+// the setup command from the form, or an error text
+function readSetup() {
+  const num = (id) => { const t = $(id).value.trim(); return t === "" ? NaN : Number(t); };
+  const bed = BED_IDS.map(num), box = BOX_IDS.map(num), gantry = num("gantryIn");
+  if (bed.some((v) => !Number.isFinite(v))) return { err: "Enter all four numbers of the bed area." };
+  if (bed[2] - bed[0] < 50 || bed[3] - bed[1] < 50) return { err: "The bed area runs from X from to X to and Y from to Y to, at least 50 mm each way." };
+  const ax = setupSt().axes;
+  if (Array.isArray(ax) && (bed[0] < ax[0] || bed[1] < ax[1] || bed[2] > ax[2] || bed[3] > ax[3])) {
+    return { err: "The bed area reaches past the axis limits (X " + ax[0] + " to " + ax[2] + ", Y " + ax[1] + " to " + ax[3] + ")." };
+  }
+  if (box.some((v) => !Number.isFinite(v) || v <= 0 || v > 300)) return { err: "Enter the toolhead box: four distances from the nozzle, each more than 0 and at most 300 mm." };
+  if (!Number.isFinite(gantry) || gantry < 1 || gantry > 1000) return { err: "Enter the gantry height in mm." };
+  const f = (v) => String(Math.round(v * 100) / 100);
+  return {
+    cmd: "_PRINTUNE_SETUP BED=" + bed.map(f).join(",") + " TOOLHEAD=-" + f(Math.abs(box[0])) + "," + f(Math.abs(box[1])) +
+      ",-" + f(Math.abs(box[2])) + "," + f(Math.abs(box[3])) + " GANTRY=" + f(gantry) + " ACCEPT=1 SAVE=1",
+  };
+}
+
+function setupSummary(st) {
+  const b = st.bed_area, t = st.toolhead_box;
+  if (!Array.isArray(b) || !Array.isArray(t) || !st.gantry_height) return "";
+  return "Bed X " + g1(b[0]) + " to " + g1(b[2]) + ", Y " + g1(b[1]) + " to " + g1(b[3]) +
+    "; toolhead -X " + g1(-t[0]) + ", +X " + g1(t[1]) + ", -Y " + g1(-t[2]) + ", +Y " + g1(t[3]) +
+    "; gantry " + g1(st.gantry_height) + " mm";
+}
+
+function renderSetup() {
+  const st = setupSt();
+  const hint = Array.isArray(st.bed_hint) ? st.bed_hint : null;
+  const mb = $("meshBtn");
+  mb.hidden = !hint;
+  if (hint) mb.textContent = "Use the bed mesh area: X " + g1(hint[0]) + " to " + g1(hint[2]) + ", Y " + g1(hint[1]) + " to " + g1(hint[3]);
+  const ax = st.axes;
+  let help = "Keep it on the plate and away from clips, a wiper or a purge bucket. ";
+  help += hint ? "The bed mesh area (where your probe has been) cut to the axis limits is a safe start. "
+    : (st.bed_hint_note ? st.bed_hint_note + ". " : "");
+  if (Array.isArray(ax)) help += "Axis limits: X " + g1(ax[0]) + " to " + g1(ax[2]) + ", Y " + g1(ax[1]) + " to " + g1(ax[3]) + ".";
+  if (st.orca_area) help += " orca_settings also sets printable_area (" + st.orca_area + "): the tests stay inside both.";
+  $("bedHelp").textContent = help;
+  let state;
+  if (st.ready) state = "Saved and accepted: " + setupSummary(st) + (st.unsaved ? " (not written to printer.cfg yet)" : "") + ".";
+  else if (st.bed_area || st.toolhead_box || st.gantry_height) state = "Not done yet: " + (st.missing || []).join(", ").replace("risk", "accepting the risk") + " missing.";
+  else state = "Not done yet. Test prints stay locked until it is.";
+  $("setupState").textContent = state;
+  $("setupSaveBtn").disabled = !$("riskCk").checked;
+}
+
+async function saveSetup() {
+  $("setupErr").hidden = true;
+  const r = readSetup();
+  if (r.err) { setupError(r.err); return; }
+  if (!$("riskCk").checked) { setupError("Tick the box to confirm you measured the values yourself and accept the risk."); return; }
+  $("setupSaveBtn").disabled = true;
+  try {
+    await runGcode(r.cmd, true);
+    toast("Machine setup saved", true);
+    view = "home";
+    render();
+    window.scrollTo(0, 0);
+  } catch (err) {
+    setupError(errText(err));
+  }
+}
+
+function setupError(text) {
+  $("setupErr").textContent = text;
+  $("setupErr").hidden = false;
+  window.scrollTo(0, 0);
+  renderSetup();
 }
 
 // ---------- running screen ----------
@@ -1159,6 +1388,14 @@ function renderHome() {
   if (busy) $("busyText").textContent = "The printer is busy printing " + printFile() + ".";
   show("startArea", !busy);
   show("tools", !busy);
+  const st = setupSt(), ready = setupReady();
+  $("setupBtn").classList.toggle("need", !ready);
+  $("setupBtn").classList.toggle("done", ready);
+  $("setupSub").textContent = ready
+    ? setupSummary(st) + (st.unsaved ? " (not written to printer.cfg yet)" : "")
+    : "Required before any test print: your bed area, toolhead size and gantry height, measured on your printer.";
+  show("lockNote", !ready);
+  for (const id of ["wizardBtn", "wizCards", "advBtn", "advCards"]) $(id).classList.toggle("locked", !ready);
   const tools = pt().tools || {};
   // the belt step is for CoreXY; without an accelerometer the steps link to how to add one
   show("beltBtn", !!tools.accel && !!tools.corexy);
@@ -1252,9 +1489,11 @@ function render() {
   const running = isRunning();
   if (running) view = "home";   // after a session the page lands on HOME, not the old form
   const showForm = !running && view === "form";
+  const showSetup = !running && view === "setup";
   show("running", running);
   show("form", showForm);
-  show("home", !running && !showForm);
+  show("setup", showSetup);
+  show("home", !running && !showForm && !showSetup);
 
   let hdr = "";
   if (running) hdr = printState() === "paused" ? "Paused" : (pt().state === "soaking" ? "Heat soak" : "Running");
@@ -1264,12 +1503,29 @@ function render() {
   if (!running) maybeSyntheticResults();
   if (running) renderRunning();
   else if (showForm) renderForm();
+  else if (showSetup) renderSetup();
   else renderHome();
   renderPrompt();
 }
 
 // ---------- event wiring ----------
 function wire() {
+  $("setupBtn").onclick = openSetup;
+  $("lockSetupBtn").onclick = openSetup;
+  $("setupBackBtn").onclick = () => { view = "home"; render(); window.scrollTo(0, 0); };
+  $("setupSaveBtn").onclick = saveSetup;
+  $("riskCk").onchange = renderSetup;
+  $("meshBtn").onclick = () => {
+    const h = setupSt().bed_hint;
+    if (!Array.isArray(h)) return;
+    BED_IDS.forEach((id, i) => { $(id).value = g1(h[i]); });
+    $("riskCk").checked = false;
+    renderSetup();
+  };
+  for (const id of BED_IDS.concat(BOX_IDS, ["gantryIn"])) {
+    // new numbers need a new confirmation (the plugin asks again too)
+    $(id).addEventListener("input", () => { $("riskCk").checked = false; renderSetup(); });
+  }
   $("wizardBtn").onclick = () => openForm("wizard");
   $("beltBtn").onclick = () => runGcode("_PRINTUNE_BELTS").catch(() => {});
   $("zcalBtn").onclick = () => runGcode("_PRINTUNE_ZCAL").catch(() => {});

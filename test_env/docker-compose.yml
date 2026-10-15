@@ -13,6 +13,10 @@ services:
       - SPEED=20      # time speed-up of the whole printer; 20 is stable, 1 = real time
       - ACCEL=1       # 1 = fake accelerometer + input shaper on; 0 = a printer without one
       - SHAKETUNE=1   # 1 = Shake&Tune on (needs ACCEL=1); 0 = as if not installed
+      - SETUP=1       # 1 = Printune machine setup preset (test values below); 0 = not set, try the setup step
+      - SETUP_BED=5,5,370,383          # test values for this virtual printer, not for a real one
+      - SETUP_TOOLHEAD=-35,35,-45,40
+      - SETUP_GANTRY=40
       - PUID=1000     # your user id and group id on the host (`id -u`, `id -g`),
       - PGID=1000     #   so files in gcodes/ and logs/ stay yours
     ports:
