@@ -3,9 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
 <title>Printune</title>
 <!-- Printune web UI. GPL-3.0. Self-contained: no external resources. -->
+<script>
+try { if (localStorage.getItem("printune_theme") === "light") document.documentElement.dataset.theme = "light"; } catch (e) {}
+</script>
 <style>
 :root {
   --bg: #121212; --card: #1e1e1e; --card2: #2a2a2a; --line: #3a3a3a;
@@ -13,14 +15,16 @@
   --primary-soft: rgba(33,150,243,.16); --ok: #4caf50; --warn: #ffb300; --err: #ef5350;
   --err-soft: rgba(239,83,80,.14); --radius: 12px;
 }
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f2f3f5; --card: #ffffff; --card2: #eceef1; --line: #d0d4da;
-    --text: #1b1b1b; --muted: #5d636b; --primary: #1976D2;
-    --primary-soft: rgba(25,118,210,.12); --ok: #2e7d32; --warn: #b26a00; --err: #c62828;
-    --err-soft: rgba(198,40,40,.10);
-  }
+/* Theme follows Mainsail's (or Fluidd's) own setting, dark by default like theirs;
+   the OS setting is used only when neither has one. See applyTheme(). */
+:root[data-theme="light"] {
+  --bg: #f2f3f5; --card: #ffffff; --card2: #eceef1; --line: #d0d4da;
+  --text: #1b1b1b; --muted: #5d636b; --primary: #1976D2;
+  --primary-soft: rgba(25,118,210,.12); --ok: #2e7d32; --warn: #b26a00; --err: #c62828;
+  --err-soft: rgba(198,40,40,.10);
+  color-scheme: light;
 }
+:root:not([data-theme="light"]) { color-scheme: dark; }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
@@ -718,6 +722,7 @@ function connect() {
     backoff = 1000;
     render();
     checkKlippy();
+    applyTheme();
   };
   ws.onmessage = (ev) => {
     let msg;
@@ -738,6 +743,27 @@ function connect() {
     scheduleReconnect();
   };
   ws.onerror = () => { /* onclose follows */ };
+}
+
+// ---------- theme: same as Mainsail / Fluidd ----------
+function setTheme(light) {
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  try { localStorage.setItem("printune_theme", light ? "light" : "dark"); } catch (e) {}
+}
+async function dbItem(namespace, key) {
+  try { return (await rpc("server.database.get_item", { namespace, key })).value; }
+  catch (e) { return undefined; }
+}
+async function applyTheme() {
+  // Mainsail keeps its theme in Moonraker's database, dark unless set to light
+  const ms = await dbItem("mainsail", "uiSettings");
+  if (ms !== undefined) { setTheme(ms && ms.mode === "light"); return; }
+  const fl = await dbItem("fluidd", "uiSettings");
+  if (fl !== undefined) { setTheme(!!(fl && fl.theme && fl.theme.isDark === false)); return; }
+  const mainsailNs = await rpc("server.database.list").then(
+    (r) => (r.namespaces || []).includes("mainsail"), () => false);
+  if (mainsailNs) { setTheme(false); return; }     // Mainsail with its default (dark)
+  setTheme(window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches);
 }
 
 function scheduleReconnect() {
