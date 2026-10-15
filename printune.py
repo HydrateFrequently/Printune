@@ -429,7 +429,7 @@ class Printune:
                 "last_proc_rel": self.last_proc_rel, "state": self.state, "message": self.message,
                 "errors": self.errors,
                 "enclosed": self.enclosed, "session": dict(self.session), "soak": soak,
-                "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target,
+                "tools": self._tools(), "belts": self.belts, "belt_target": self.belt_target, "belt_tol": self.belt_tol,
                 "belt_now": self.belt_now if self.belt_now in ("A", "B") else None,
                 "belt_live": self.belt_live,
                 "shaper": self.shaper, "graphs": self.graphs, "setup": self._setup_status(),
@@ -474,7 +474,7 @@ class Printune:
         target = gcmd.get_float("TARGET", self.belt_target, minval=20., maxval=400.)
         plucks = 5      # on target: the average of 5 good plucks
         self.belt_plucks = plucks
-        self.belts = {"target": target, "plucks": plucks, "round": 0, "phase": "coarse",
+        self.belts = {"target": target, "plucks": plucks, "round": 0,
                       "A": None, "B": None, "heard": [], "advice": "Measure belt A", "done": False,
                       "tol": self.belt_tol, "tap": [], "fails": {"A": 0, "B": 0}, "deaf": False,
                       "possible": False, "good": {}, "prev": {}}

@@ -244,40 +244,19 @@ def series_rules(q):
 
 
 def tensioning():
-    """plan(): a user who turns exactly as told reaches +-0.25 Hz (average of 5 plucks),
-    also on stiff tensioners (many Hz per turn)."""
-    import random
-    for hz_turn in (6.0, 24.0, 40.0):
-        done_runs = 0
-        for seed in range(20):
-            r = random.Random(seed)
-            A, B = 92.0 + r.uniform(-3, 3), 90.0 + r.uniform(-3, 3)
-            b = {"target": 110.0, "tol": 0.25, "plucks": 5, "round": 0, "phase": "coarse"}
-            for _ in range(40):
-                b["A"] = {"freq": round(A + r.gauss(0, 0.1), 1), "used": 5}
-                b["B"] = {"freq": round(B + r.gauss(0, 0.1), 1), "used": 5}
-                adv, upd = belts.plan(b)
-                b.update(upd)
-                if b.get("done"):
-                    done_runs += 1
-                    break
-                last = b.get("last")
-                if last:
-                    turn = last["turns"]
-                elif "Rough" in adv:
-                    turn = (100.0 - min(A, B)) / hz_turn     # coarse: the user turns by ear
-                    last = {"belt": "A" if A < B else "B"}
-                else:
-                    continue
-                own = hz_turn * turn
-                if last["belt"] == "A":
-                    A, B = A + own, B + 0.3 * own
-                else:
-                    B, A = B + own, A + 0.3 * own
-        ok = done_runs >= 18
-        print("%-4s %-46s %d/20 done" % ("ok" if ok else "FAIL", "tension to +-0.25 Hz at %g Hz/turn" % hz_turn, done_runs))
+    """plan(): just which way, and done only from 5 good plucks each within tol."""
+    cases = [((105.0, 110.1, 5, 5), "Tighten belt A, then", False),
+             ((110.3, 112.0, 5, 5), "Loosen belt A and loosen belt B", False),
+             ((110.2, 109.8, 5, 5), "Both belts are on target", True),
+             ((110.2, 109.8, 5, 4), "not from 5 good plucks", False)]
+    for (fa, fb, ua, ub), want, done in cases:
+        b = {"target": 110.0, "tol": 0.25, "plucks": 5,
+             "A": {"freq": fa, "used": ua}, "B": {"freq": fb, "used": ub}}
+        adv, upd = belts.plan(b)
+        ok = want in adv and upd.get("done") == done
+        print("%-4s %-46s %s" % ("ok" if ok else "FAIL", "plan %s / %s" % (fa, fb), adv))
         if not ok:
-            FAILS.append("tension %g" % hz_turn)
+            FAILS.append("plan %s/%s" % (fa, fb))
 
 
 def load(path):

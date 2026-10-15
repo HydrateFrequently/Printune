@@ -534,84 +534,25 @@ def analyse_tap(t, ax, ay, az, quiet=None):
     return {"modes": modes, "note": "" if modes else "the tap rang nothing clearly"}
 
 
-_EIGHTHS = {1: "1/8", 2: "1/4", 3: "3/8", 4: "1/2", 5: "5/8", 6: "3/4", 7: "7/8", 8: "1"}
-
-
-def _told(t):
-    """The turn as told to the user and its text: eighths of a turn, and below 1/8 a
-    1/16, 1/32 or 1/64 turn (stiff tensioners need those to get within a fraction of a Hz).
-    Never 0, so what a small turn did is still learned."""
-    if abs(t) * 8 >= 0.75:
-        n = min(8, int(round(abs(t) * 8)))
-        return math.copysign(n / 8.0, t), "about %s turn" % _EIGHTHS[n]
-    if abs(t) * 32 >= 1.5:
-        return math.copysign(1 / 16.0, t), "a little (about 1/16 turn)"
-    if abs(t) * 64 >= 1.5:
-        return math.copysign(1 / 32.0, t), "a hair (about 1/32 turn)"
-    return math.copysign(1 / 64.0, t), "the smallest bit you can (about 1/64 turn)"
-
-
 def plan(b):
-    """Next instruction for tensioning a CoreXY pair. b is the belt state (target, tol,
-    phase, A, B and what was learned so far); returns (advice, updates for b).
-
-    Coarse: both belts to about 90-100 Hz (for a 110 Hz target). Fine: one belt at a
-    time, re-measuring both after each turn. How many Hz a turn gives, and how much of
-    that the other belt sees, differ per printer: they are learned from the turns asked
-    for and the change measured, so the turns asked for shrink as the belts get close.
-    """
-    tgt, tol, phase = b["target"], b["tol"], b.get("phase", "coarse")
+    """What to tell the user after both belts were measured. b is the belt state
+    (target, tol, A, B); returns (advice, updates for b). Just the numbers and which
+    way: the user reads them and tightens or loosens."""
+    tgt, tol = b["target"], b["tol"]
     fa = (b.get("A") or {}).get("freq")
     fb = (b.get("B") or {}).get("freq")
     upd = {}
     if fa is None or fb is None:
         return "", upd
-    k, c = b.get("hz_per_turn"), b.get("coupling", 0.3)
-    last = b.get("last")
-    if last and last.get("A") is not None:
-        own, other = (fa, fb) if last["belt"] == "A" else (fb, fa)
-        p_own, p_other = (last["A"], last["B"]) if last["belt"] == "A" else (last["B"], last["A"])
-        d_own, d_other = own - p_own, other - p_other
-        # learn only from a real turn that moved the belt the way it should, by more
-        # than the scatter between plucks
-        if last["turns"] and last["turns"] * d_own > 0 and abs(d_own) > 1.5:
-            k_new = min(100.0, max(2.0, d_own / last["turns"]))
-            k = k_new if k is None else 0.5 * (k + k_new)
-            c = 0.5 * (c + min(0.8, max(0.0, d_other / d_own)))
-            upd.update(hz_per_turn=round(k, 2), coupling=round(c, 3))
-    upd["last"] = None
-    lo, hi = tgt - 20, tgt - 10
-    if phase == "coarse":
-        if min(fa, fb) < lo - 1:
-            which = "both belts" if max(fa, fb) < lo - 1 else ("belt A" if fa < fb else "belt B")
-            upd["phase"] = "coarse"
-            return ("Rough first: tighten %s until each reads about %.0f-%.0f Hz, then measure both again"
-                    % (which, lo, hi)), upd
-        phase = upd["phase"] = "fine"
-    da, db = fa - tgt, fb - tgt
     need = b.get("plucks", 5)
     full = all(((b.get(k) or {}).get("used") or 0) >= need for k in ("A", "B"))
-    if abs(da) <= tol and abs(db) <= tol and full:
-        upd["done"] = True
+    on = [abs(f - tgt) <= tol for f in (fa, fb)]
+    upd["done"] = all(on) and full
+    if upd["done"]:
         return "Both belts are on target. Done.", upd
-    if abs(da) <= tol and abs(db) <= tol:
-        upd["done"] = False
+    if all(on):
         return "On target, but not from %d good plucks each: measure both again" % need, upd
-    upd["done"] = False
-    if k is None:
-        # nothing learned yet: a small first step
-        belt, d = ("A", da) if abs(da) >= abs(db) else ("B", db)
-        t = (-0.25 if d > 0 else 0.25) * (2 if abs(d) >= 8 else 1)
-        how = "a little (about 1/4 turn)" if abs(t) < 0.5 else "about 1/2 turn"
-        sign = t
-    else:
-        # turns on A and B that would bring both to the target, given the coupling
-        det = 1.0 - c * c
-        ta = (-da + c * db) / (k * det)
-        tb = (-db + c * da) / (k * det)
-        belt, t = ("A", ta) if abs(ta) >= abs(tb) else ("B", tb)
-        sign = t
-        t, how = _told(max(-1.0, min(1.0, t)))
-    upd["last"] = {"belt": belt, "turns": t, "A": fa, "B": fb}
-    return ("%s belt %s %s, then measure both again"
-            % ("Tighten" if sign > 0 else "Loosen", belt, how)), upd
+    todo = ["%s belt %s" % ("tighten" if f < tgt else "loosen", k)
+            for k, f, o in (("A", fa, on[0]), ("B", fb, on[1])) if not o]
+    adv = " and ".join(todo)
+    return adv[0].upper() + adv[1:] + ", then measure both again", upd
